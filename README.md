@@ -69,7 +69,8 @@ Change `ACCESS_TOKEN` in Netlify and redeploy. Any browser holding the old token
 - Each message sends the conversation so far to `POST /api/chat` with `Authorization: Bearer <token>`. The function rejects anything without a valid token with `401` before touching any provider.
 - The chat history lives only in the open tab. **New chat** or a reload clears it. Nothing is stored server-side.
 - Replies stream in as the model writes them, with a "thinking" note until the first words arrive. The function relays the provider's stream to the browser as newline-delimited JSON. Each finished reply shows which provider and model answered.
-- Model output is shown as plain text (never parsed as HTML), and the site sends a strict Content-Security-Policy plus `noindex` headers.
+- Messages (yours and the model's) are rendered as Markdown with [marked](https://marked.js.org), sanitized with [DOMPurify](https://github.com/cure53/DOMPurify) (no raw HTML, images, scripts or event handlers), and code blocks get [highlight.js](https://highlightjs.org) colors and a Copy button. The libraries are vendored in `public/vendor/`, so the strict Content-Security-Policy (`script-src 'self'`) still holds. The site also sends `noindex` headers.
+- While a reply streams, the page doesn't scroll on its own. It jumps to the bottom only when you send a message.
 
 ### Limits worth knowing
 
