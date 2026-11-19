@@ -50,8 +50,23 @@ async function fetchWithTimeout(url, opts) {
   }
 }
 
+// Turn a failed upstream response into an error that says why (e.g. a retired model).
+async function upstreamError(name, res) {
+  let detail = "";
+  try {
+    const body = await res.text();
+    try {
+      detail = JSON.parse(body)?.error?.message || body;
+    } catch {
+      detail = body;
+    }
+  } catch {}
+  detail = String(detail).replace(/\s+/g, " ").trim().slice(0, 300);
+  return new Error(`${name} HTTP ${res.status}${detail ? ": " + detail : ""}`);
+}
+
 async function callGemini(messages, system, env) {
-  const model = env.GEMINI_MODEL || "gemini-2.5-flash";
+  const model = env.GEMINI_MODEL || "gemini-3.8-flash";
   const body = {
     contents: messages.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
@@ -67,7 +82,7 @@ async function callGemini(messages, system, env) {
       body: JSON.stringify(body),
     },
   );
-  if (!res.ok) throw new Error(`Gemini HTTP ${res.status}`);
+  if (!res.ok) throw await upstreamError("Gemini", res);
   const data = await res.json();
   const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("");
   if (!text) throw new Error("Gemini returned no text");
@@ -75,7 +90,7 @@ async function callGemini(messages, system, env) {
 }
 
 async function callGroq(messages, system, env) {
-  const model = env.GROQ_MODEL || "llama-3.3-70b-versatile";
+  const model = env.GROQ_MODEL || "openai/gpt-oss-120b";
   const res = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${env.GROQ_API_KEY}` },
@@ -84,7 +99,7 @@ async function callGroq(messages, system, env) {
       messages: system ? [{ role: "system", content: system }, ...messages] : messages,
     }),
   });
-  if (!res.ok) throw new Error(`Groq HTTP ${res.status}`);
+  if (!res.ok) throw await upstreamError("Groq", res);
   const data = await res.json();
   const text = data.choices?.[0]?.message?.content || "";
   if (!text) throw new Error("Groq returned no text");

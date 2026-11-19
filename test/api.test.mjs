@@ -101,6 +101,13 @@ test("no fallback: a Gemini 429 is returned as an error", async () => {
   assert.equal(calls.length, 1, "Groq must not be called");
 });
 
+test("upstream error message is passed through", async () => {
+  mockFetch(() => new Response(JSON.stringify({ error: { code: 404, message: "models/x is not found" } }), { status: 404 }));
+  const res = await handle(chat("gemini"), env);
+  assert.equal(res.status, 502);
+  assert.equal((await res.json()).error, "Gemini HTTP 404: models/x is not found");
+});
+
 test("no fallback: a network error is returned as an error", async () => {
   mockFetch(() => { throw new Error("ECONNRESET"); });
   const res = await handle(chat("groq"), env);

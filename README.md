@@ -48,8 +48,8 @@ Keep it in your password manager. The server refuses tokens shorter than 16 char
 | `ACCESS_TOKEN` | yes | the token from step 2 |
 | `GEMINI_API_KEY` | one of the two | key from Google AI Studio |
 | `GROQ_API_KEY` | one of the two | key from the Groq console |
-| `GEMINI_MODEL` | no | defaults to `gemini-2.5-flash` |
-| `GROQ_MODEL` | no | defaults to `llama-3.3-70b-versatile` |
+| `GEMINI_MODEL` | no | defaults to `gemini-3.8-flash` |
+| `GROQ_MODEL` | no | defaults to `openai/gpt-oss-120b` |
 | `SYSTEM_PROMPT` | no | instructions sent with every chat |
 
    Mark `ACCESS_TOKEN` and the keys as **secret** values if your plan offers it, and scope them to **Functions**.
