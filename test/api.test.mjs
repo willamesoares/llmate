@@ -14,9 +14,28 @@ const req = (path, { token = TOKEN, body, method = "POST" } = {}) =>
     body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
   });
 
-const ok = (obj) => new Response(JSON.stringify(obj), { status: 200 });
-const geminiOk = ok({ candidates: [{ content: { parts: [{ text: "hi from gemini" }] } }] });
-const groqOk = ok({ choices: [{ message: { content: "hi from groq" } }] });
+// A server-sent-events response, delivered in awkward chunk boundaries on purpose.
+const sse = (events, { tail = "" } = {}) => {
+  const text = events.map((e) => "data: " + JSON.stringify(e) + "\r\n\r\n").join("") + tail;
+  const bytes = new TextEncoder().encode(text);
+  return new Response(new ReadableStream({
+    start(c) {
+      for (let i = 0; i < bytes.length; i += 7) c.enqueue(bytes.slice(i, i + 7));
+      c.close();
+    },
+  }), { status: 200, headers: { "content-type": "text/event-stream" } });
+};
+const gem = (t) => ({ candidates: [{ content: { parts: [{ text: t }] } }] });
+const grq = (t) => ({ choices: [{ delta: { content: t } }] });
+const geminiOk = () => sse([gem("hi from "), gem("gemini")]);
+const groqOk = () => sse([grq("hi from "), grq("groq"), { choices: [{ delta: {} }] }], { tail: "data: [DONE]\n\n" });
+
+// Read the function's NDJSON stream into a list of events.
+async function events(res) {
+  assert.match(res.headers.get("content-type"), /ndjson/);
+  return (await res.text()).trim().split("\n").map((l) => JSON.parse(l));
+}
+const textOf = (evs) => evs.filter((e) => e.type === "delta").map((e) => e.text).join("");
 
 function mockFetch(handler) {
   globalThis.fetch = async (url, opts) => {
@@ -62,8 +81,8 @@ test("verify succeeds and lists configured providers", async () => {
 const chat = (provider, messages = [{ role: "user", content: "x" }]) =>
   req("/api/chat", { body: { provider, messages } });
 
-test("gemini: maps roles and sends system prompt", async () => {
-  mockFetch(() => geminiOk.clone());
+test("gemini: streams text, maps roles and sends system prompt", async () => {
+  mockFetch(() => geminiOk());
   const messages = [
     { role: "user", content: "a" },
     { role: "assistant", content: "b" },
@@ -71,26 +90,45 @@ test("gemini: maps roles and sends system prompt", async () => {
   ];
   const res = await handle(chat("gemini", messages), { ...env, SYSTEM_PROMPT: "be nice" });
   assert.equal(res.status, 200);
-  const data = await res.json();
-  assert.equal(data.provider, "gemini");
-  assert.equal(data.text, "hi from gemini");
+  const evs = await events(res);
+  assert.deepEqual(evs[0], { type: "meta", provider: "gemini", model: "gemini-3.5-flash-lite" });
+  assert.equal(textOf(evs), "hi from gemini");
+  assert.equal(evs.filter((e) => e.type === "delta").length, 2, "arrives in pieces");
+  assert.deepEqual(evs.at(-1), { type: "done" });
   assert.equal(calls.length, 1);
-  assert.match(calls[0].url, /generativelanguage\.googleapis\.com/);
+  assert.match(calls[0].url, /:streamGenerateContent\?alt=sse$/);
   assert.equal(calls[0].opts.headers["x-goog-api-key"], "g");
   const sent = JSON.parse(calls[0].opts.body);
   assert.deepEqual(sent.contents.map((c) => c.role), ["user", "model", "user"]);
   assert.equal(sent.systemInstruction.parts[0].text, "be nice");
 });
 
-test("groq: calls only Groq", async () => {
-  mockFetch(() => groqOk.clone());
+test("groq: streams text and calls only Groq", async () => {
+  mockFetch(() => groqOk());
   const res = await handle(chat("groq"), { ...env, SYSTEM_PROMPT: "be nice" });
-  const data = await res.json();
-  assert.equal(data.provider, "groq");
+  const evs = await events(res);
+  assert.equal(evs[0].provider, "groq");
+  assert.equal(textOf(evs), "hi from groq");
+  assert.deepEqual(evs.at(-1), { type: "done" });
   assert.equal(calls.length, 1);
   assert.match(calls[0].url, /api\.groq\.com/);
   assert.equal(calls[0].opts.headers.authorization, "Bearer q");
-  assert.deepEqual(JSON.parse(calls[0].opts.body).messages[0], { role: "system", content: "be nice" });
+  const sent = JSON.parse(calls[0].opts.body);
+  assert.equal(sent.stream, true);
+  assert.deepEqual(sent.messages[0], { role: "system", content: "be nice" });
+});
+
+test("an error mid-stream ends with an error event", async () => {
+  mockFetch(() => sse([grq("partial"), { error: { message: "overloaded" } }]));
+  const evs = await events(await handle(chat("groq"), env));
+  assert.equal(textOf(evs), "partial");
+  assert.deepEqual(evs.at(-1), { type: "error", error: "Groq: overloaded" });
+});
+
+test("an empty stream is reported as an error", async () => {
+  mockFetch(() => sse([]));
+  const evs = await events(await handle(chat("gemini"), env));
+  assert.deepEqual(evs.at(-1), { type: "error", error: "gemini returned no text" });
 });
 
 test("no fallback: a Gemini 429 is returned as a quota error", async () => {

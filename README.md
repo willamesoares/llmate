@@ -3,7 +3,7 @@
 A private LLM chat hosted on Netlify. Only someone holding the access token can use it.
 
 - **Frontend:** one static page (`public/index.html`) with a token-only login screen and a chat view. No build step, no dependencies.
-- **Backend:** one Netlify Function (`netlify/functions/api.mjs`) serving `/api/verify` and `/api/chat`. It checks the token with a constant-time compare, then calls the provider you picked for that chat: **Google Gemini** (free tier, Flash model) or **Groq** (free tier). There is no automatic fallback.
+- **Backend:** one Netlify Function (`netlify/functions/api.mjs`) serving `/api/verify` and `/api/chat`. It checks the token with a constant-time compare, then calls the provider you picked for that chat: **Google Gemini** (free tier, Flash-Lite model) or **Groq** (free tier). There is no automatic fallback.
 - **Secrets** (the token and both API keys) live only in Netlify environment variables. The browser never sees the provider keys.
 
 Everything here runs on free tiers: Netlify Starter, Gemini API free tier and Groq free tier.
@@ -48,7 +48,7 @@ Keep it in your password manager. The server refuses tokens shorter than 16 char
 | `ACCESS_TOKEN` | yes | the token from step 2 |
 | `GEMINI_API_KEY` | one of the two | key from Google AI Studio |
 | `GROQ_API_KEY` | one of the two | key from the Groq console |
-| `GEMINI_MODEL` | no | defaults to `gemini-3.8-flash` |
+| `GEMINI_MODEL` | no | defaults to `gemini-3.5-flash-lite` |
 | `GROQ_MODEL` | no | defaults to `openai/gpt-oss-120b` |
 | `SYSTEM_PROMPT` | no | instructions sent with every chat |
 
@@ -68,13 +68,13 @@ Change `ACCESS_TOKEN` in Netlify and redeploy. Any browser holding the old token
 - Pick **Gemini** or **Groq** in the dropdown next to the title. The choice locks once that provider has answered in the chat; click **New chat** to switch. If the first request fails (for example, a rate limit), you can still change it. The last choice is remembered on the device.
 - Each message sends the conversation so far to `POST /api/chat` with `Authorization: Bearer <token>`. The function rejects anything without a valid token with `401` before touching any provider.
 - The chat history lives only in the open tab. **New chat** or a reload clears it. Nothing is stored server-side.
-- Replies show which provider and model answered.
+- Replies stream in as the model writes them, with a "thinking" note until the first words arrive. The function relays the provider's stream to the browser as newline-delimited JSON. Each finished reply shows which provider and model answered.
 - Model output is shown as plain text (never parsed as HTML), and the site sends a strict Content-Security-Policy plus `noindex` headers.
 
 ### Limits worth knowing
 
 - Free tiers have per-minute and per-day request caps. When a provider's daily quota (or a short per-minute limit) is hit, the chat shows a friendly note saying when it resets and suggests the other provider.
-- Netlify caps how long a synchronous function may run (check [Netlify's function limits](https://docs.netlify.com/functions/overview/#default-deployment-options) for your plan). Each provider gets up to 20 seconds, so if Netlify's cap is shorter, a very slow answer ends with a timeout error.
+- Netlify caps how long a synchronous function may run (check [Netlify's function limits](https://docs.netlify.com/functions/overview/#default-deployment-options) for your plan). The function gives up if the provider sends nothing for 20 seconds. If Netlify's cap cuts a long streamed answer short, the text so far stays in the chat, marked as stopped early.
 - History is capped at the last 40 messages and about 32,000 characters.
 
 ## Local development

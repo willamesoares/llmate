@@ -40,13 +40,34 @@ function cleanMessages(raw) {
   return msgs;
 }
 
-async function fetchWithTimeout(url, opts) {
+// Abort if the provider sends nothing (headers or stream data) for this long.
+function idleTimer() {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), UPSTREAM_TIMEOUT_MS);
-  try {
-    return await fetch(url, { ...opts, signal: ctrl.signal });
-  } finally {
+  let t;
+  const poke = () => {
     clearTimeout(t);
+    t = setTimeout(() => ctrl.abort(), UPSTREAM_TIMEOUT_MS);
+  };
+  poke();
+  return { signal: ctrl.signal, poke, stop: () => clearTimeout(t), abort: () => (clearTimeout(t), ctrl.abort()) };
+}
+
+// Yield the JSON payload of each "data:" line in a server-sent-events stream.
+async function* sseEvents(body, poke) {
+  const decoder = new TextDecoder();
+  let buf = "";
+  for await (const chunk of body) {
+    poke();
+    buf += decoder.decode(chunk, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).replace(/\r$/, "");
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      yield JSON.parse(data);
+    }
   }
 }
 
@@ -87,8 +108,11 @@ export function classifyQuota(body, retryAfter) {
   return { kind: daily ? "daily" : "rate", retryAfterSeconds: seconds === null ? null : Math.ceil(seconds) };
 }
 
-async function callGemini(messages, system, env) {
-  const model = env.GEMINI_MODEL || "gemini-3.8-flash";
+// Each provider opens a streaming request. A failed request throws (so quota
+// errors become a normal JSON 429); a successful one returns an async
+// iterator of text pieces.
+async function openGemini(messages, system, env, timer) {
+  const model = env.GEMINI_MODEL || "gemini-3.5-flash-lite";
   const body = {
     contents: messages.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
@@ -96,41 +120,53 @@ async function callGemini(messages, system, env) {
     })),
   };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
-  const res = await fetchWithTimeout(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
     {
       method: "POST",
       headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
       body: JSON.stringify(body),
+      signal: timer.signal,
     },
   );
   if (!res.ok) throw await upstreamError("Gemini", res);
-  const data = await res.json();
-  const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("");
-  if (!text) throw new Error("Gemini returned no text");
-  return { text, provider: "gemini", model };
+  async function* pieces() {
+    for await (const ev of sseEvents(res.body, timer.poke)) {
+      if (ev.error) throw new Error("Gemini: " + (ev.error.message || "stream error"));
+      for (const part of ev.candidates?.[0]?.content?.parts || []) {
+        if (part.text && !part.thought) yield part.text;
+      }
+    }
+  }
+  return { model, pieces: pieces() };
 }
 
-async function callGroq(messages, system, env) {
+async function openGroq(messages, system, env, timer) {
   const model = env.GROQ_MODEL || "openai/gpt-oss-120b";
-  const res = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${env.GROQ_API_KEY}` },
     body: JSON.stringify({
       model,
+      stream: true,
       messages: system ? [{ role: "system", content: system }, ...messages] : messages,
     }),
+    signal: timer.signal,
   });
   if (!res.ok) throw await upstreamError("Groq", res);
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content || "";
-  if (!text) throw new Error("Groq returned no text");
-  return { text, provider: "groq", model };
+  async function* pieces() {
+    for await (const ev of sseEvents(res.body, timer.poke)) {
+      if (ev.error) throw new Error("Groq: " + (ev.error.message || "stream error"));
+      const text = ev.choices?.[0]?.delta?.content;
+      if (text) yield text;
+    }
+  }
+  return { model, pieces: pieces() };
 }
 
 const PROVIDERS = {
-  gemini: { key: "GEMINI_API_KEY", call: callGemini },
-  groq: { key: "GROQ_API_KEY", call: callGroq },
+  gemini: { key: "GEMINI_API_KEY", open: openGemini },
+  groq: { key: "GROQ_API_KEY", open: openGroq },
 };
 
 // Providers whose API key is set, in display order.
@@ -163,14 +199,54 @@ export async function handle(req, env) {
   }
   if (!env[PROVIDERS[name].key]) return json(400, { error: `${name} is not configured on the server` });
 
+  const timer = idleTimer();
+  let opened;
   try {
-    return json(200, await PROVIDERS[name].call(messages, env.SYSTEM_PROMPT || "", env));
+    opened = await PROVIDERS[name].open(messages, env.SYSTEM_PROMPT || "", env, timer);
   } catch (err) {
+    timer.stop();
     const reason = err.name === "AbortError" ? `${name}: timeout` : err.message;
     console.error("Provider failed:", reason);
     if (err.quota) return json(429, { error: reason, provider: name, quota: err.quota });
     return json(502, { error: reason });
   }
+
+  // Stream newline-delimited JSON events to the browser:
+  // {type:"meta",provider,model} then {type:"delta",text}... then {type:"done"} or {type:"error",error}.
+  const enc = new TextEncoder();
+  const line = (obj) => enc.encode(JSON.stringify(obj) + "\n");
+  const stream = new ReadableStream({
+    async start(controller) {
+      controller.enqueue(line({ type: "meta", provider: name, model: opened.model }));
+      let any = false;
+      try {
+        for await (const text of opened.pieces) {
+          any = true;
+          controller.enqueue(line({ type: "delta", text }));
+        }
+        if (!any) throw new Error(`${name} returned no text`);
+        controller.enqueue(line({ type: "done" }));
+      } catch (err) {
+        const reason = err.name === "AbortError" ? `${name}: timeout` : err.message;
+        console.error("Provider stream failed:", reason);
+        controller.enqueue(line({ type: "error", error: reason }));
+      } finally {
+        timer.stop();
+        controller.close();
+      }
+    },
+    cancel() {
+      timer.abort(); // the browser went away: stop the upstream request too
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    },
+  });
 }
 
 export default (req) => handle(req, process.env);
