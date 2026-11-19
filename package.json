@@ -2,7 +2,7 @@
   "name": "llmate",
   "private": true,
   "type": "module",
-  "description": "Private, token-gated LLM chat on Netlify (Gemini free tier with Groq fallback).",
+  "description": "Private, token-gated LLM chat on Netlify (Gemini or Groq free tier, chosen per chat).",
   "scripts": {
     "test": "node --test",
     "token": "node -e \"console.log(require('crypto').randomBytes(32).toString('base64url'))\""

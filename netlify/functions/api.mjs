@@ -91,13 +91,23 @@ async function callGroq(messages, system, env) {
   return { text, provider: "groq", model };
 }
 
+const PROVIDERS = {
+  gemini: { key: "GEMINI_API_KEY", call: callGemini },
+  groq: { key: "GROQ_API_KEY", call: callGroq },
+};
+
+// Providers whose API key is set, in display order.
+export function availableProviders(env) {
+  return Object.keys(PROVIDERS).filter((name) => env[PROVIDERS[name].key]);
+}
+
 export async function handle(req, env) {
   if (req.method !== "POST") return json(405, { error: "Method not allowed" });
   if (!env.ACCESS_TOKEN) return json(500, { error: "Server is missing ACCESS_TOKEN" });
   if (!tokenMatches(bearer(req), env.ACCESS_TOKEN)) return json(401, { error: "Invalid token" });
 
   const path = new URL(req.url).pathname;
-  if (path.endsWith("/verify")) return json(200, { ok: true });
+  if (path.endsWith("/verify")) return json(200, { ok: true, providers: availableProviders(env) });
   if (!path.endsWith("/chat")) return json(404, { error: "Not found" });
 
   let payload;
@@ -109,22 +119,20 @@ export async function handle(req, env) {
   const messages = cleanMessages(payload?.messages);
   if (!messages) return json(400, { error: "messages must end with a user message" });
 
-  const system = env.SYSTEM_PROMPT || "";
-  const providers = [];
-  if (env.GEMINI_API_KEY) providers.push(callGemini);
-  if (env.GROQ_API_KEY) providers.push(callGroq);
-  if (providers.length === 0) return json(500, { error: "No provider API keys configured" });
-
-  const errors = [];
-  for (const call of providers) {
-    try {
-      return json(200, await call(messages, system, env));
-    } catch (err) {
-      errors.push(err.name === "AbortError" ? `${call.name}: timeout` : err.message);
-    }
+  // The client picks the provider. There is no automatic fallback.
+  const name = payload?.provider;
+  if (!Object.hasOwn(PROVIDERS, name)) {
+    return json(400, { error: "provider must be one of: " + Object.keys(PROVIDERS).join(", ") });
   }
-  console.error("All providers failed:", errors.join("; "));
-  return json(502, { error: "All providers failed", details: errors });
+  if (!env[PROVIDERS[name].key]) return json(400, { error: `${name} is not configured on the server` });
+
+  try {
+    return json(200, await PROVIDERS[name].call(messages, env.SYSTEM_PROMPT || "", env));
+  } catch (err) {
+    const reason = err.name === "AbortError" ? `${name}: timeout` : err.message;
+    console.error("Provider failed:", reason);
+    return json(502, { error: reason });
+  }
 }
 
 export default (req) => handle(req, process.env);

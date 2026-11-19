@@ -3,7 +3,7 @@
 A private LLM chat hosted on Netlify. Only someone holding the access token can use it.
 
 - **Frontend:** one static page (`public/index.html`) with a token-only login screen and a chat view. No build step, no dependencies.
-- **Backend:** one Netlify Function (`netlify/functions/api.mjs`) serving `/api/verify` and `/api/chat`. It checks the token with a constant-time compare, then calls **Google Gemini** (free tier, Flash model). If Gemini errors, times out or is rate limited, it falls back to **Groq** (free tier).
+- **Backend:** one Netlify Function (`netlify/functions/api.mjs`) serving `/api/verify` and `/api/chat`. It checks the token with a constant-time compare, then calls the provider you picked for that chat: **Google Gemini** (free tier, Flash model) or **Groq** (free tier). There is no automatic fallback.
 - **Secrets** (the token and both API keys) live only in Netlify environment variables. The browser never sees the provider keys.
 
 Everything here runs on free tiers: Netlify Starter, Gemini API free tier and Groq free tier.
@@ -12,18 +12,18 @@ Everything here runs on free tiers: Netlify Starter, Gemini API free tier and Gr
 
 ### 1. Get the free API keys
 
-**Gemini (primary)**
+**Gemini**
 1. Go to [Google AI Studio](https://aistudio.google.com/apikey) and sign in with a Google account.
 2. Click **Create API key**. No billing account is needed for the free tier.
 3. Copy the key. This is `GEMINI_API_KEY`.
 
 > Note: on the free tier Google may use your prompts to improve its products. Don't send anything you wouldn't want reviewed. Groq does not train on API data.
 
-**Groq (fallback)**
+**Groq**
 1. Go to the [Groq console](https://console.groq.com/keys) and sign up.
 2. Click **Create API Key** and copy it. This is `GROQ_API_KEY`.
 
-You can deploy with only one of the two keys; the function uses whichever are set. With both, Gemini is tried first.
+You can deploy with only one of the two keys; the provider picker only lists providers whose key is set.
 
 ### 2. Generate your access token
 
@@ -65,6 +65,7 @@ Change `ACCESS_TOKEN` in Netlify and redeploy. Any browser holding the old token
 ## How it works
 
 - The login screen sends the token to `POST /api/verify`. On success the token is kept in the browser's `localStorage`, so you stay logged in on that device until you click **Log out**.
+- Pick **Gemini** or **Groq** in the dropdown next to the title. The choice locks once that provider has answered in the chat; click **New chat** to switch. If the first request fails (for example, a rate limit), you can still change it. The last choice is remembered on the device.
 - Each message sends the conversation so far to `POST /api/chat` with `Authorization: Bearer <token>`. The function rejects anything without a valid token with `401` before touching any provider.
 - The chat history lives only in the open tab. **New chat** or a reload clears it. Nothing is stored server-side.
 - Replies show which provider and model answered.
@@ -72,8 +73,8 @@ Change `ACCESS_TOKEN` in Netlify and redeploy. Any browser holding the old token
 
 ### Limits worth knowing
 
-- Free tiers have per-minute and per-day request caps. When Gemini's cap is hit, Groq takes over; if both are exhausted you'll see an error until the window resets.
-- Netlify caps how long a synchronous function may run (check [Netlify's function limits](https://docs.netlify.com/functions/overview/#default-deployment-options) for your plan). Each provider gets up to 20 seconds, so if Netlify's cap is shorter, a very slow answer ends with a timeout instead of falling back to Groq. Rate-limit and error responses come back fast, so those fall back normally.
+- Free tiers have per-minute and per-day request caps. When a provider's cap is hit you'll see an error; wait for the window to reset or start a new chat with the other provider.
+- Netlify caps how long a synchronous function may run (check [Netlify's function limits](https://docs.netlify.com/functions/overview/#default-deployment-options) for your plan). Each provider gets up to 20 seconds, so if Netlify's cap is shorter, a very slow answer ends with a timeout error.
 - History is capped at the last 40 messages and about 32,000 characters.
 
 ## Local development

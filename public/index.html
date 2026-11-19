@@ -53,6 +53,11 @@
     padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
   }
   header strong { font-size: 17px; }
+  header .left { display: flex; align-items: center; gap: 12px; }
+  #provider {
+    padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg);
+  }
+  #provider:disabled { opacity: .7; }
   header .actions { display: flex; gap: 8px; }
   #log { flex: 1; overflow-y: auto; padding: 20px 16px; }
   .inner { max-width: 760px; margin: 0 auto; }
@@ -84,7 +89,10 @@
 
 <section id="chat" class="hidden">
   <header>
-    <strong>LLMate</strong>
+    <div class="left">
+      <strong>LLMate</strong>
+      <select id="provider" aria-label="Provider" title="Provider for this chat. Start a new chat to switch."></select>
+    </div>
     <div class="actions">
       <button class="ghost" id="newChat" type="button">New chat</button>
       <button class="ghost" id="logout" type="button">Log out</button>
@@ -101,14 +109,30 @@
 
 <script>
 const KEY = "llmate.token";
+const PKEY = "llmate.provider";
+const LABELS = { gemini: "Gemini", groq: "Groq" };
 const $ = (id) => document.getElementById(id);
 let history = [];
 
 const store = {
-  get() { try { return localStorage.getItem(KEY); } catch { return null; } },
-  set(v) { try { localStorage.setItem(KEY, v); } catch {} },
+  get(k = KEY) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(v, k = KEY) { try { localStorage.setItem(k, v); } catch {} },
   clear() { try { localStorage.removeItem(KEY); } catch {} },
 };
+
+// Fill the picker with the providers the server has keys for.
+function setProviders(list) {
+  const sel = $("provider");
+  const keep = sel.value || store.get(PKEY);
+  sel.replaceChildren(...(list || []).map((p) => new Option(LABELS[p] || p, p)));
+  if (list && list.includes(keep)) sel.value = keep;
+}
+
+// The provider is fixed once it has answered in this chat; "New chat" unlocks it.
+// Until then (e.g. the first request failed) it can still be changed.
+function lockProvider() {
+  $("provider").disabled = history.some((m) => m.role === "assistant" && !m.error && !m.pending);
+}
 
 async function api(path, token, body) {
   const res = await fetch(path, {
@@ -136,7 +160,13 @@ function logout(message) {
   show("login");
 }
 
+function alertBox(text) {
+  history.push({ role: "assistant", content: text, error: true });
+  render();
+}
+
 function render() {
+  lockProvider();
   const box = $("messages");
   box.replaceChildren();
   if (history.length === 0) {
@@ -167,8 +197,8 @@ $("loginForm").addEventListener("submit", async (e) => {
   $("loginBtn").disabled = true;
   $("loginError").textContent = "";
   try {
-    const { status } = await api("/api/verify", token);
-    if (status === 200) { store.set(token); show("chat"); render(); }
+    const { status, data } = await api("/api/verify", token);
+    if (status === 200) { store.set(token); setProviders(data.providers); show("chat"); render(); }
     else $("loginError").textContent = status === 401 ? "That token is not valid." : "Server error (" + status + ").";
   } catch {
     $("loginError").textContent = "Could not reach the server.";
@@ -181,7 +211,9 @@ $("composer").addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = $("input").value.trim();
   const token = store.get();
+  const provider = $("provider").value;
   if (!text || !token) return;
+  if (!provider) { alertBox("No provider is configured on the server."); return; }
   $("input").value = "";
   autosize();
   history.push({ role: "user", content: text });
@@ -191,10 +223,14 @@ $("composer").addEventListener("submit", async (e) => {
   $("send").disabled = true;
   try {
     const turns = history.filter((m) => !m.pending && !m.error).map(({ role, content }) => ({ role, content }));
-    const { status, data } = await api("/api/chat", token, { messages: turns });
+    const { status, data } = await api("/api/chat", token, { provider, messages: turns });
     if (status === 401) return logout("Your token was rejected. Log in again.");
     if (status === 200) Object.assign(pending, { content: data.text, meta: data.provider + " · " + data.model, pending: false });
-    else Object.assign(pending, { content: data.error || "Request failed (" + status + ").", error: true, pending: false });
+    else {
+      let msg = data.error || "Request failed (" + status + ").";
+      if (/\b429\b/.test(msg)) msg += " (rate limited). Try again later, or pick another provider.";
+      Object.assign(pending, { content: msg, error: true, pending: false });
+    }
   } catch {
     Object.assign(pending, { content: "Could not reach the server.", error: true, pending: false });
   } finally {
@@ -213,6 +249,7 @@ $("input").addEventListener("input", autosize);
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("composer").requestSubmit(); }
 });
+$("provider").addEventListener("change", () => store.set($("provider").value, PKEY));
 $("newChat").addEventListener("click", () => { history = []; render(); $("input").focus(); });
 $("logout").addEventListener("click", () => logout());
 
@@ -221,8 +258,8 @@ $("logout").addEventListener("click", () => logout());
   const token = store.get();
   if (!token) return show("login");
   try {
-    const { status } = await api("/api/verify", token);
-    if (status === 200) { show("chat"); render(); } else logout("Your saved token is no longer valid.");
+    const { status, data } = await api("/api/verify", token);
+    if (status === 200) { setProviders(data.providers); show("chat"); render(); } else logout("Your saved token is no longer valid.");
   } catch { show("chat"); render(); }
 })();
 </script>
