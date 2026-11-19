@@ -66,6 +66,10 @@
   .msg.assistant { padding: 2px 2px; }
   .msg .meta { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
   .msg.err { color: var(--error); }
+  .msg.notice {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 14px; color: var(--text);
+  }
   .empty { color: var(--muted); text-align: center; margin-top: 20vh; }
   form#composer { border-top: 1px solid var(--border); background: var(--panel); padding: 12px 16px; }
   form#composer .inner { display: flex; gap: 8px; align-items: flex-end; }
@@ -160,6 +164,30 @@ function logout(message) {
   show("login");
 }
 
+function waitText(sec) {
+  if (sec == null) return "";
+  if (sec < 60) return "in a few seconds";
+  if (sec < 3600) return "in about " + Math.ceil(sec / 60) + " min";
+  const h = Math.round(sec / 360) / 10;
+  return "in about " + h + (h === 1 ? " hour" : " hours");
+}
+
+// A friendly note for quota limits instead of the raw provider error.
+function quotaMessage(data) {
+  const name = LABELS[data.provider] || "This provider";
+  const others = [...$("provider").options].map((o) => o.value).filter((p) => p !== data.provider);
+  const how = $("provider").disabled ? "start a new chat with " : "switch to ";
+  const alt = others.length ? " Meanwhile, you can " + how + (LABELS[others[0]] || others[0]) + "." : "";
+  const q = data.quota || {};
+  if (q.kind === "daily") {
+    const when = waitText(q.retryAfterSeconds) ||
+      (data.provider === "gemini" ? "at midnight Pacific time" : "soon");
+    return "☕ " + name + " has used up today's free quota. Thanks for all the chatting! It resets " + when + "." + alt;
+  }
+  const when = waitText(q.retryAfterSeconds) || "in a minute";
+  return "⏳ " + name + " needs a short breather (free-tier rate limit). Try again " + when + "." + alt;
+}
+
 function alertBox(text) {
   history.push({ role: "assistant", content: text, error: true });
   render();
@@ -178,7 +206,7 @@ function render() {
   }
   for (const m of history) {
     const div = document.createElement("div");
-    div.className = "msg " + m.role + (m.error ? " err" : "");
+    div.className = "msg " + m.role + (m.notice ? " notice" : m.error ? " err" : "");
     div.textContent = m.content; // textContent: model output is never parsed as HTML
     if (m.meta) {
       const s = document.createElement("span");
@@ -227,9 +255,9 @@ $("composer").addEventListener("submit", async (e) => {
     if (status === 401) return logout("Your token was rejected. Log in again.");
     if (status === 200) Object.assign(pending, { content: data.text, meta: data.provider + " · " + data.model, pending: false });
     else {
-      let msg = data.error || "Request failed (" + status + ").";
-      if (/\b429\b/.test(msg)) msg += " (rate limited). Try again later, or pick another provider.";
-      Object.assign(pending, { content: msg, error: true, pending: false });
+      const notice = status === 429 && quotaMessage(data);
+      const msg = notice || data.error || "Request failed (" + status + ").";
+      Object.assign(pending, { content: msg, error: true, notice: !!notice, pending: false });
     }
   } catch {
     Object.assign(pending, { content: "Could not reach the server.", error: true, pending: false });

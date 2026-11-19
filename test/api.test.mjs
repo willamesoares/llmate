@@ -93,12 +93,42 @@ test("groq: calls only Groq", async () => {
   assert.deepEqual(JSON.parse(calls[0].opts.body).messages[0], { role: "system", content: "be nice" });
 });
 
-test("no fallback: a Gemini 429 is returned as an error", async () => {
+test("no fallback: a Gemini 429 is returned as a quota error", async () => {
   mockFetch(() => new Response("quota", { status: 429 }));
   const res = await handle(chat("gemini"), env);
-  assert.equal(res.status, 502);
-  assert.match((await res.json()).error, /429/);
+  assert.equal(res.status, 429);
+  const data = await res.json();
+  assert.match(data.error, /429/);
+  assert.equal(data.provider, "gemini");
+  assert.deepEqual(data.quota, { kind: "rate", retryAfterSeconds: null });
   assert.equal(calls.length, 1, "Groq must not be called");
+});
+
+test("Gemini daily quota is detected", async () => {
+  const body = {
+    error: {
+      code: 429,
+      message: "You exceeded your current quota. Please retry in 41.2s.",
+      details: [{ violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }],
+    },
+  };
+  mockFetch(() => new Response(JSON.stringify(body), { status: 429 }));
+  const data = await (await handle(chat("gemini"), env)).json();
+  assert.deepEqual(data.quota, { kind: "daily", retryAfterSeconds: 42 });
+});
+
+test("Groq daily and per-minute limits are told apart", async () => {
+  const daily = { error: { message: "Rate limit reached for model `x` on requests per day (RPD): Limit 1000, Used 1000. Please try again in 7m12.5s." } };
+  mockFetch(() => new Response(JSON.stringify(daily), { status: 429 }));
+  assert.deepEqual((await (await handle(chat("groq"), env)).json()).quota, { kind: "daily", retryAfterSeconds: 433 });
+  const minute = { error: { message: "Rate limit reached on tokens per minute (TPM): Please try again in 2.5s." } };
+  mockFetch(() => new Response(JSON.stringify(minute), { status: 429 }));
+  assert.deepEqual((await (await handle(chat("groq"), env)).json()).quota, { kind: "rate", retryAfterSeconds: 3 });
+});
+
+test("Retry-After header is used when the body has no hint", async () => {
+  mockFetch(() => new Response("slow down", { status: 429, headers: { "retry-after": "30" } }));
+  assert.deepEqual((await (await handle(chat("groq"), env)).json()).quota, { kind: "rate", retryAfterSeconds: 30 });
 });
 
 test("upstream error message is passed through", async () => {

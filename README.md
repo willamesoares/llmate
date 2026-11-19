@@ -73,7 +73,7 @@ Change `ACCESS_TOKEN` in Netlify and redeploy. Any browser holding the old token
 
 ### Limits worth knowing
 
-- Free tiers have per-minute and per-day request caps. When a provider's cap is hit you'll see an error; wait for the window to reset or start a new chat with the other provider.
+- Free tiers have per-minute and per-day request caps. When a provider's daily quota (or a short per-minute limit) is hit, the chat shows a friendly note saying when it resets and suggests the other provider.
 - Netlify caps how long a synchronous function may run (check [Netlify's function limits](https://docs.netlify.com/functions/overview/#default-deployment-options) for your plan). Each provider gets up to 20 seconds, so if Netlify's cap is shorter, a very slow answer ends with a timeout error.
 - History is capped at the last 40 messages and about 32,000 characters.
 

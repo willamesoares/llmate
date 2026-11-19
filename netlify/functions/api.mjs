@@ -52,9 +52,10 @@ async function fetchWithTimeout(url, opts) {
 
 // Turn a failed upstream response into an error that says why (e.g. a retired model).
 async function upstreamError(name, res) {
+  let body = "";
   let detail = "";
   try {
-    const body = await res.text();
+    body = await res.text();
     try {
       detail = JSON.parse(body)?.error?.message || body;
     } catch {
@@ -62,7 +63,28 @@ async function upstreamError(name, res) {
     }
   } catch {}
   detail = String(detail).replace(/\s+/g, " ").trim().slice(0, 300);
-  return new Error(`${name} HTTP ${res.status}${detail ? ": " + detail : ""}`);
+  const err = new Error(`${name} HTTP ${res.status}${detail ? ": " + detail : ""}`);
+  if (res.status === 429) err.quota = classifyQuota(body, res.headers.get("retry-after"));
+  return err;
+}
+
+// Work out from a 429 whether a daily quota or a short rate limit was hit,
+// and roughly when to retry. Gemini names the quota (e.g. "...PerDay...");
+// Groq says "requests per day (RPD)" or "tokens per day (TPD)".
+export function classifyQuota(body, retryAfter) {
+  const text = String(body || "");
+  const daily = /per ?day|\bRPD\b|\bTPD\b|daily/i.test(text);
+  let seconds = null;
+  const m = text.match(/(?:retry|try again) in ((?:[\d.]+[hms])+)/i);
+  if (m) {
+    seconds = 0;
+    for (const [, n, unit] of m[1].matchAll(/([\d.]+)([hms])/g)) {
+      seconds += parseFloat(n) * { h: 3600, m: 60, s: 1 }[unit];
+    }
+  } else if (retryAfter && /^\d+$/.test(retryAfter)) {
+    seconds = Number(retryAfter);
+  }
+  return { kind: daily ? "daily" : "rate", retryAfterSeconds: seconds === null ? null : Math.ceil(seconds) };
 }
 
 async function callGemini(messages, system, env) {
@@ -146,6 +168,7 @@ export async function handle(req, env) {
   } catch (err) {
     const reason = err.name === "AbortError" ? `${name}: timeout` : err.message;
     console.error("Provider failed:", reason);
+    if (err.quota) return json(429, { error: reason, provider: name, quota: err.quota });
     return json(502, { error: reason });
   }
 }
