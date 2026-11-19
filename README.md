@@ -64,6 +64,85 @@ Change `ACCESS_TOKEN` in Netlify and redeploy. Any browser holding the old token
 
 ## How it works
 
+### The pieces
+
+```mermaid
+flowchart TB
+    subgraph Browser["Your browser"]
+        UI["index.html<br/>login screen + chat<br/>(Markdown via vendored marked,<br/>DOMPurify, highlight.js)"]
+        LS[("localStorage<br/>token, last provider")]
+    end
+
+    subgraph Netlify["Netlify (free tier)"]
+        STATIC["Static hosting<br/>public/"]
+        FN["Netlify Function api.mjs<br/>/api/verify, /api/chat"]
+        ENV[("Environment variables<br/>ACCESS_TOKEN, GEMINI_API_KEY,<br/>GROQ_API_KEY, optional overrides")]
+    end
+
+    subgraph Providers["LLM providers (free tiers)"]
+        GEM["Google Gemini<br/>gemini-3.5-flash-lite"]
+        GROQ["Groq<br/>openai/gpt-oss-120b"]
+    end
+
+    STATIC -- "serves the page" --> UI
+    UI <-- "remembers token" --> LS
+    UI -- "token + provider + messages" --> FN
+    ENV -. "secrets" .-> FN
+    FN -- "streaming request<br/>with server-side key" --> GEM
+    FN -- "streaming request<br/>with server-side key" --> GROQ
+    FN -- "reply streamed back<br/>as NDJSON" --> UI
+```
+
+The browser only ever talks to your own Netlify site. The provider API keys live in Netlify environment variables and are used only inside the function, so they never reach the browser.
+
+### The user flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant UI as Browser (chat page)
+    participant FN as Netlify Function
+    participant P as Gemini or Groq
+
+    You->>UI: Open the site
+    UI->>UI: Saved token in localStorage?
+    alt No saved token
+        UI-->>You: Show login screen
+        You->>UI: Paste access token
+    end
+    UI->>FN: POST /api/verify (Bearer token)
+    FN->>FN: Constant-time compare with ACCESS_TOKEN
+    alt Token wrong
+        FN-->>UI: 401
+        UI-->>You: "That token is not valid"
+    else Token right
+        FN-->>UI: 200 + providers that have keys
+        UI-->>You: Chat screen with provider dropdown
+    end
+
+    You->>UI: Pick provider, type a message
+    UI-->>You: "Gemini is thinking..."
+    UI->>FN: POST /api/chat (token, provider, history)
+    FN->>FN: Check token, provider and message size
+    FN->>P: Streaming request with the server-side API key
+    alt Quota or error
+        P-->>FN: 429 / 4xx / 5xx
+        FN-->>UI: JSON error (429 includes daily vs per-minute)
+        UI-->>You: Friendly quota note or error message
+    else Success
+        P-->>FN: Text chunks (server-sent events)
+        loop For each chunk
+            FN-->>UI: delta event (NDJSON line)
+            UI-->>You: Reply grows, rendered as sanitized Markdown
+        end
+        FN-->>UI: done event
+        UI-->>You: Code highlighted, provider and model shown
+    end
+```
+
+### Details
+
 - The login screen sends the token to `POST /api/verify`. On success the token is kept in the browser's `localStorage`, so you stay logged in on that device until you click **Log out**.
 - Pick **Gemini** or **Groq** in the dropdown next to the title. The choice locks once that provider has answered in the chat; click **New chat** to switch. If the first request fails (for example, a rate limit), you can still change it. The last choice is remembered on the device.
 - Each message sends the conversation so far to `POST /api/chat` with `Authorization: Bearer <token>`. The function rejects anything without a valid token with `401` before touching any provider.
