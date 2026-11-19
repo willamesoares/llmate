@@ -171,7 +171,7 @@
   <header>
     <div class="left">
       <strong>LLMate</strong>
-      <span class="select"><select id="provider" aria-label="Provider" title="Provider for this chat. Start a new chat to switch."></select></span>
+      <span class="select"><select id="provider" aria-label="Provider" title="Provider for the next message. You can switch at any time."></select></span>
     </div>
     <div class="actions">
       <button class="ghost" id="newChat" type="button">New chat</button>
@@ -208,10 +208,10 @@ function setProviders(list) {
   if (list && list.includes(keep)) sel.value = keep;
 }
 
-// The provider is fixed once it has answered in this chat; "New chat" unlocks it.
-// Until then (e.g. the first request failed) it can still be changed.
+// You can switch provider at any point in a chat; the whole conversation so far
+// goes to whichever provider is selected. It's only locked while a reply streams.
 function lockProvider() {
-  $("provider").disabled = history.some((m) => m.role === "assistant" && !m.error && !m.pending);
+  $("provider").disabled = history.some((m) => m.pending);
 }
 
 async function api(path, token, body) {
@@ -287,8 +287,7 @@ function waitText(sec) {
 function quotaMessage(data) {
   const name = LABELS[data.provider] || "This provider";
   const others = [...$("provider").options].map((o) => o.value).filter((p) => p !== data.provider);
-  const how = $("provider").disabled ? "start a new chat with " : "switch to ";
-  const alt = others.length ? " Meanwhile, you can " + how + (LABELS[others[0]] || others[0]) + "." : "";
+  const alt = others.length ? " Meanwhile, you can switch to " + (LABELS[others[0]] || others[0]) + "." : "";
   const q = data.quota || {};
   if (q.kind === "daily") {
     const when = waitText(q.retryAfterSeconds) ||

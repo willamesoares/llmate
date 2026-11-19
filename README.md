@@ -153,7 +153,7 @@ Of the pieces in the diagrams, four handle what you type. **Your browser** holds
 ### Details
 
 - The login screen sends the token to `POST /api/verify`. On success the token is kept in the browser's `localStorage`, so you stay logged in on that device until you click **Log out**.
-- Pick **Gemini** or **Groq** in the dropdown next to the title. The choice locks once that provider has answered in the chat; click **New chat** to switch. If the first request fails (for example, a rate limit), you can still change it. The last choice is remembered on the device.
+- Pick **Gemini** or **Groq** in the dropdown next to the title. You can switch at any point in a chat (except while a reply is streaming). The next message sends the whole conversation so far to the provider you picked, and each reply is labeled with the provider and model that wrote it. The last choice is remembered on the device.
 - Each message sends the conversation so far to `POST /api/chat` with `Authorization: Bearer <token>`. The function rejects anything without a valid token with `401` before touching any provider.
 - The chat history lives only in the open tab. **New chat** or a reload clears it. Nothing is stored server-side.
 - Replies stream in as the model writes them, with a "thinking" note until the first words arrive. The function relays the provider's stream to the browser as newline-delimited JSON. Each finished reply shows which provider and model answered.
