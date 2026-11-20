@@ -1,13 +1,9 @@
 @import "tailwindcss";
-@import "@fontsource/ibm-plex-sans/400.css";
-@import "@fontsource/ibm-plex-sans/500.css";
-@import "@fontsource/ibm-plex-sans/600.css";
-@import "@fontsource/ibm-plex-sans/400-italic.css";
+@import "@fontsource-variable/atkinson-hyperlegible-next";
 @import "@fontsource/ibm-plex-mono/400.css";
 @import "@fontsource/ibm-plex-mono/500.css";
-@import "@fontsource/ibm-plex-mono/600.css";
 
-:root { --display-weight: 600; --display-tracking: -0.03em; }
+:root { --display-weight: 760; --display-tracking: -0.025em; }
 
 /* Dark mode follows the system setting. */
 @custom-variant dark (@media (prefers-color-scheme: dark));
@@ -44,8 +40,8 @@
 }
 
 @theme inline {
-  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "IBM Plex Mono", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Atkinson Hyperlegible Next Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Atkinson Hyperlegible Next Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   /* Names Magic UI / shadcn components expect. */
@@ -116,7 +112,7 @@ body {
 .md li > p { margin: 0; }
 .md a { color: var(--ember-ink); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .md a:hover { text-decoration-thickness: 2px; }
-.md blockquote { border-left: 2px solid var(--ember); padding-left: 14px; color: var(--muted); font-style: italic; }
+.md blockquote { border-left: 2px solid var(--ember); padding-left: 14px; color: var(--muted); }
 .md hr { border: 0; border-top: 1px dashed var(--line-strong); margin: 1.4em 0; }
 .md code {
   font-family: var(--font-mono); font-size: .86em; font-variant-ligatures: none;
@@ -142,7 +138,7 @@ body {
 .user-md code, .user-md pre { background: color-mix(in srgb, var(--surface) 60%, transparent); }
 
 /* ---------- Code highlighting (warm, two-tone; follows the theme) ---------- */
-.hljs-comment, .hljs-quote { color: var(--muted); font-style: italic; }
+.hljs-comment, .hljs-quote { color: var(--muted); }
 .hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-name, .hljs-tag { color: var(--ember-ink); }
 .hljs-string, .hljs-attr, .hljs-symbol, .hljs-bullet, .hljs-addition, .hljs-template-tag, .hljs-template-variable {
   color: #4f7a3a;
