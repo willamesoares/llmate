@@ -2,7 +2,7 @@
 
 A private LLM chat hosted on Netlify. Only someone holding the access token can use it.
 
-- **Frontend:** one static page (`public/index.html`) with a token-only login screen and a chat view. No build step, no dependencies.
+- **Frontend:** a small React app (`src/`, built with Vite and Tailwind CSS) with a token-only login screen and a chat view. A few [Magic UI](https://magicui.design) components (in `src/components/ui/`) add restrained motion: the dot grid and spotlight card on the login screen, messages fading in, a shimmer on the "thinking" note, and a light beam around the message box while a reply streams. Fonts and libraries are bundled and self-hosted; the page loads nothing from other sites.
 - **Backend:** one Netlify Function (`netlify/functions/api.mjs`) serving `/api/verify` and `/api/chat`. It checks the token with a constant-time compare, then calls the provider you picked for that chat: **Google Gemini** (free tier, Flash-Lite model) or **Groq** (free tier). There is no automatic fallback.
 - **Secrets** (the token and both API keys) live only in Netlify environment variables. The browser never sees the provider keys.
 
@@ -30,7 +30,7 @@ You can deploy with only one of the two keys; the provider picker only lists pro
 Any long random string works. Pick one of:
 
 ```sh
-npm run token                       # from this repo, needs Node 18+
+npm run token                       # from this repo, needs Node 20.19+
 openssl rand -base64 32             # macOS / Linux
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 ```
@@ -40,7 +40,7 @@ Keep it in your password manager. The server refuses tokens shorter than 16 char
 ### 3. Create the Netlify site
 
 1. In [Netlify](https://app.netlify.com), click **Add new site → Import an existing project** and pick this GitHub repo.
-2. Leave the build command empty. Netlify reads `netlify.toml` (publish dir `public`, functions dir `netlify/functions`).
+2. Leave the build settings empty in the Netlify UI. Netlify reads `netlify.toml`: build command `npm run build`, publish dir `dist`, functions dir `netlify/functions`, Node 22. (If you typed a build command or publish directory into the UI earlier, clear them: UI values override the file.)
 3. Before (or right after) the first deploy, open **Site configuration → Environment variables** and add:
 
 | Variable | Required | Value |
@@ -69,12 +69,12 @@ Change `ACCESS_TOKEN` in Netlify and redeploy. Any browser holding the old token
 ```mermaid
 flowchart TB
     subgraph Browser["Your browser"]
-        UI["index.html<br/>login screen + chat<br/>(Markdown via vendored marked,<br/>DOMPurify, highlight.js)"]
+        UI["React app (Vite build)<br/>login screen + chat<br/>(Markdown via marked,<br/>DOMPurify, highlight.js)"]
         LS[("localStorage<br/>token, last provider")]
     end
 
     subgraph Netlify["Netlify (free tier)"]
-        STATIC["Static hosting<br/>public/"]
+        STATIC["Static hosting<br/>dist/ (built from src/)"]
         FN["Netlify Function api.mjs<br/>/api/verify, /api/chat"]
         ENV[("Environment variables<br/>ACCESS_TOKEN, GEMINI_API_KEY,<br/>GROQ_API_KEY, optional overrides")]
     end
@@ -157,7 +157,7 @@ Of the pieces in the diagrams, four handle what you type. **Your browser** holds
 - Each message sends the conversation so far to `POST /api/chat` with `Authorization: Bearer <token>`. The function rejects anything without a valid token with `401` before touching any provider.
 - The chat history lives only in the open tab. **New chat** or a reload clears it. Nothing is stored server-side.
 - Replies stream in as the model writes them, with a "thinking" note until the first words arrive. The function relays the provider's stream to the browser as newline-delimited JSON. Each finished reply shows which provider and model answered.
-- Messages (yours and the model's) are rendered as Markdown with [marked](https://marked.js.org), sanitized with [DOMPurify](https://github.com/cure53/DOMPurify) (no raw HTML, images, scripts or event handlers), and code blocks get [highlight.js](https://highlightjs.org) colors and a Copy button. The libraries are vendored in `public/vendor/`, so the strict Content-Security-Policy (`script-src 'self'`) still holds. The site also sends `noindex` headers.
+- Messages (yours and the model's) are rendered as Markdown with [marked](https://marked.js.org), sanitized with [DOMPurify](https://github.com/cure53/DOMPurify) (no raw HTML, images, scripts or event handlers), and code blocks get [highlight.js](https://highlightjs.org) colors and a Copy button. The libraries are bundled into the app by Vite, so the strict Content-Security-Policy (`script-src 'self'`, no inline scripts) still holds. The site also sends `noindex` headers.
 - While a reply streams, the page doesn't scroll on its own. It jumps to the bottom only when you send a message.
 
 ### Limits worth knowing
@@ -169,8 +169,12 @@ Of the pieces in the diagrams, four handle what you type. **Your browser** holds
 ## Local development
 
 ```sh
+npm install
 npm test                 # unit tests for the function (providers mocked)
+npm run typecheck        # TypeScript check for the frontend
 npm i -g netlify-cli
 cp .env.example .env     # fill in your values
-netlify dev              # serves the page and function at http://localhost:8888
+netlify dev              # runs Vite and the function together at http://localhost:8888
 ```
+
+To add another Magic UI component, run `npx shadcn@latest add @magicui/<name>` (the registry is set up in `components.json`), or copy the file from the [Magic UI docs](https://magicui.design/docs) into `src/components/ui/`.

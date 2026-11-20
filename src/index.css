@@ -1,0 +1,152 @@
+@import "tailwindcss";
+@import "@fontsource-variable/instrument-sans";
+@import "@fontsource/instrument-serif/400.css";
+@import "@fontsource/instrument-serif/400-italic.css";
+@import "@fontsource-variable/jetbrains-mono";
+
+/* Dark mode follows the system setting. */
+@custom-variant dark (@media (prefers-color-scheme: dark));
+
+:root {
+  --paper: #f4f1ea;
+  --surface: #fbfaf6;
+  --ink: #1c1a17;
+  --muted: #6f6a60;
+  --line: #e2ddd2;
+  --line-strong: #cfc8ba;
+  --ember: #d9481f;
+  --ember-ink: #b23a15;
+  --amber: #f2a541;
+  --user-bubble: #ebe5d8;
+  --code: #ece7dc;
+  --danger: #b42318;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #121110;
+    --surface: #1a1917;
+    --ink: #ece8df;
+    --muted: #9a948a;
+    --line: #2c2a26;
+    --line-strong: #3d3a34;
+    --ember: #f06a3c;
+    --ember-ink: #ff8a5f;
+    --amber: #f2b45c;
+    --user-bubble: #26241f;
+    --code: #1f1e1b;
+    --danger: #f97066;
+  }
+}
+
+@theme inline {
+  --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Names Magic UI / shadcn components expect. */
+  --color-background: var(--surface);
+  --color-foreground: var(--ink);
+  --color-border: var(--line);
+
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ember: var(--ember);
+  --color-ember-ink: var(--ember-ink);
+  --color-amber: var(--amber);
+  --color-user: var(--user-bubble);
+  --color-code: var(--code);
+  --color-danger: var(--danger);
+
+  --animate-shiny-text: shiny-text 2.4s infinite;
+  @keyframes shiny-text {
+    0%, 90%, 100% { background-position: calc(-100% - var(--shiny-width)) 0; }
+    30%, 60% { background-position: calc(100% + var(--shiny-width)) 0; }
+  }
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: color-mix(in srgb, var(--ember) 25%, transparent); }
+
+.caret {
+  display: inline-block; width: .5em; height: 1.05em; margin-left: 3px;
+  vertical-align: text-bottom; background: var(--ember); border-radius: 1px;
+  animation: caret 1s steps(2) infinite;
+}
+@keyframes caret { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .caret { animation: none; }
+}
+
+/* ---------- Markdown inside messages ---------- */
+.md { overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md pre, .md blockquote, .md table { margin: 0 0 .8em; }
+.md h1, .md h2, .md h3, .md h4 {
+  margin: 1.2em 0 .45em; line-height: 1.2; font-family: var(--font-serif); font-weight: 400;
+  letter-spacing: -.01em;
+}
+.md h1 { font-size: 1.75em; } .md h2 { font-size: 1.5em; } .md h3 { font-size: 1.25em; } .md h4 { font-size: 1.1em; }
+.md strong { font-weight: 620; }
+.md ul, .md ol { padding-left: 1.3em; }
+.md ul { list-style: disc; } .md ol { list-style: decimal; }
+.md li { margin: .25em 0; padding-left: .15em; }
+.md li::marker { color: var(--muted); }
+.md li > p { margin: 0; }
+.md a { color: var(--ember-ink); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.md a:hover { text-decoration-thickness: 2px; }
+.md blockquote { border-left: 2px solid var(--ember); padding-left: 14px; color: var(--muted); font-style: italic; }
+.md hr { border: 0; border-top: 1px dashed var(--line-strong); margin: 1.4em 0; }
+.md code {
+  font-family: var(--font-mono); font-size: .86em; font-variant-ligatures: none;
+  background: var(--code); border: 1px solid var(--line); border-radius: 5px; padding: .08em .35em;
+}
+.md pre {
+  position: relative; background: var(--code); border: 1px solid var(--line);
+  border-radius: 12px; padding: 14px 16px; overflow-x: auto; white-space: pre; line-height: 1.55;
+}
+.md pre code { background: none; border: 0; padding: 0; border-radius: 0; font-size: 13px; }
+.md .copy {
+  position: absolute; top: 8px; right: 8px; font: 500 11px/16px var(--font-mono);
+  letter-spacing: .04em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 6px; background: var(--surface); color: var(--muted);
+  border: 1px solid var(--line); cursor: pointer; opacity: 0; transition: opacity .15s, color .15s;
+}
+.md .copy:hover { color: var(--ink); }
+.md pre:hover .copy, .md .copy:focus-visible { opacity: 1; }
+@media (hover: none) { .md .copy { opacity: 1; } }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; font-size: .94em; }
+.md th, .md td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+.md th { background: var(--code); font-weight: 600; }
+.user-md code, .user-md pre { background: color-mix(in srgb, var(--surface) 60%, transparent); }
+
+/* ---------- Code highlighting (warm, two-tone; follows the theme) ---------- */
+.hljs-comment, .hljs-quote { color: var(--muted); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-name, .hljs-tag { color: var(--ember-ink); }
+.hljs-string, .hljs-attr, .hljs-symbol, .hljs-bullet, .hljs-addition, .hljs-template-tag, .hljs-template-variable {
+  color: #4f7a3a;
+}
+.hljs-number, .hljs-literal, .hljs-type, .hljs-variable, .hljs-selector-id, .hljs-selector-class { color: #8a5a00; }
+.hljs-title, .hljs-section, .hljs-function .hljs-title { color: #2f5f8a; }
+.hljs-meta, .hljs-deletion { color: #9a4b6b; }
+.hljs-emphasis { font-style: italic; } .hljs-strong { font-weight: 700; }
+@media (prefers-color-scheme: dark) {
+  .hljs-string, .hljs-attr, .hljs-symbol, .hljs-bullet, .hljs-addition, .hljs-template-tag, .hljs-template-variable { color: #a5c98a; }
+  .hljs-number, .hljs-literal, .hljs-type, .hljs-variable, .hljs-selector-id, .hljs-selector-class { color: #e7b86a; }
+  .hljs-title, .hljs-section, .hljs-function .hljs-title { color: #8fb8e0; }
+  .hljs-meta, .hljs-deletion { color: #d99bb5; }
+}
