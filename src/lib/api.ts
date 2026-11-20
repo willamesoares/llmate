@@ -5,6 +5,33 @@ export const label = (p?: string) => (p && LABELS[p]) || p || "The model"
 
 const TOKEN_KEY = "llmate.token"
 const PROVIDER_KEY = "llmate.provider"
+const EFFORT_KEY = "llmate.effort." // + provider
+
+export type EffortOption = { value: string; label: string; hint: string }
+
+// Effort levels per provider, matching EFFORTS in the function. Gemini 3.x
+// takes a thinking level; Groq's gpt-oss takes a reasoning effort.
+export const EFFORTS: Record<string, { default: string; options: EffortOption[] }> = {
+  gemini: {
+    default: "minimal",
+    options: [
+      { value: "minimal", label: "Minimal", hint: "Answers almost right away with little or no thinking. Fastest, and Gemini's default." },
+      { value: "low", label: "Low", hint: "A quick think first. Good for everyday questions." },
+      { value: "medium", label: "Medium", hint: "Works through the problem. Better for multi-step questions, a bit slower." },
+      { value: "high", label: "High", hint: "Thinks the longest. Best for tricky code, math or logic. Slowest." },
+    ],
+  },
+  groq: {
+    default: "medium",
+    options: [
+      { value: "low", label: "Low", hint: "Brief reasoning. Fastest replies, fine for simple questions." },
+      { value: "medium", label: "Medium", hint: "Balanced reasoning for most questions. The model's usual setting." },
+      { value: "high", label: "High", hint: "Long, careful reasoning for hard problems. Slower, and uses more of the daily token quota." },
+    ],
+  },
+}
+export const effortLabel = (provider: string, value?: string) =>
+  EFFORTS[provider]?.options.find((o) => o.value === value)?.label || value || ""
 
 const get = (k: string) => { try { return localStorage.getItem(k) } catch { return null } }
 const set = (k: string, v: string) => { try { localStorage.setItem(k, v) } catch { /* private mode */ } }
@@ -16,6 +43,14 @@ export const store = {
   clearToken: () => del(TOKEN_KEY),
   provider: () => get(PROVIDER_KEY),
   setProvider: (v: string) => set(PROVIDER_KEY, v),
+  // Remembered per provider, since each takes different levels.
+  effort: (p: string) => {
+    const e = EFFORTS[p]
+    if (!e) return ""
+    const saved = get(EFFORT_KEY + p)
+    return saved && e.options.some((o) => o.value === saved) ? saved : e.default
+  },
+  setEffort: (p: string, v: string) => set(EFFORT_KEY + p, v),
 }
 
 export async function verify(token: string): Promise<{ status: number; providers: string[] }> {
@@ -30,7 +65,7 @@ export async function verify(token: string): Promise<{ status: number; providers
 }
 
 export type StreamEvent =
-  | { type: "meta"; provider: string; model: string }
+  | { type: "meta"; provider: string; model: string; effort?: string }
   | { type: "delta"; text: string }
   | { type: "done" }
   | { type: "error"; error: string }

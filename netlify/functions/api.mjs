@@ -111,7 +111,7 @@ export function classifyQuota(body, retryAfter) {
 // Each provider opens a streaming request. A failed request throws (so quota
 // errors become a normal JSON 429); a successful one returns an async
 // iterator of text pieces.
-async function openGemini(messages, system, env, timer) {
+async function openGemini(messages, system, env, timer, effort) {
   const model = env.GEMINI_MODEL || "gemini-3.5-flash-lite";
   const body = {
     contents: messages.map((m) => ({
@@ -120,6 +120,13 @@ async function openGemini(messages, system, env, timer) {
     })),
   };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
+  if (effort) {
+    // Ask for thought summaries too (they are dropped below) so the stream
+    // keeps moving while the model thinks and the idle timer doesn't fire.
+    body.generationConfig = {
+      thinkingConfig: { thinkingLevel: effort, ...(effort !== "minimal" && { includeThoughts: true }) },
+    };
+  }
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
     {
@@ -141,7 +148,7 @@ async function openGemini(messages, system, env, timer) {
   return { model, pieces: pieces() };
 }
 
-async function openGroq(messages, system, env, timer) {
+async function openGroq(messages, system, env, timer, effort) {
   const model = env.GROQ_MODEL || "openai/gpt-oss-120b";
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
@@ -149,6 +156,9 @@ async function openGroq(messages, system, env, timer) {
     body: JSON.stringify({
       model,
       stream: true,
+      // gpt-oss streams its reasoning in delta.reasoning (ignored below); it keeps
+      // the idle timer alive while the model thinks.
+      ...(effort && { reasoning_effort: effort }),
       messages: system ? [{ role: "system", content: system }, ...messages] : messages,
     }),
     signal: timer.signal,
@@ -163,6 +173,14 @@ async function openGroq(messages, system, env, timer) {
   }
   return { model, pieces: pieces() };
 }
+
+// Effort levels each provider accepts. Gemini 3.x takes a thinking level
+// ("minimal" is as close to off as Flash-Lite allows); Groq's gpt-oss takes a
+// reasoning effort. Leaving effort out uses the model's own default.
+export const EFFORTS = {
+  gemini: ["minimal", "low", "medium", "high"],
+  groq: ["low", "medium", "high"],
+};
 
 const PROVIDERS = {
   gemini: { key: "GEMINI_API_KEY", open: openGemini },
@@ -198,11 +216,15 @@ export async function handle(req, env) {
     return json(400, { error: "provider must be one of: " + Object.keys(PROVIDERS).join(", ") });
   }
   if (!env[PROVIDERS[name].key]) return json(400, { error: `${name} is not configured on the server` });
+  const effort = payload?.effort ?? null;
+  if (effort !== null && !EFFORTS[name].includes(effort)) {
+    return json(400, { error: `effort for ${name} must be one of: ` + EFFORTS[name].join(", ") });
+  }
 
   const timer = idleTimer();
   let opened;
   try {
-    opened = await PROVIDERS[name].open(messages, env.SYSTEM_PROMPT || "", env, timer);
+    opened = await PROVIDERS[name].open(messages, env.SYSTEM_PROMPT || "", env, timer, effort);
   } catch (err) {
     timer.stop();
     const reason = err.name === "AbortError" ? `${name}: timeout` : err.message;
@@ -212,12 +234,12 @@ export async function handle(req, env) {
   }
 
   // Stream newline-delimited JSON events to the browser:
-  // {type:"meta",provider,model} then {type:"delta",text}... then {type:"done"} or {type:"error",error}.
+  // {type:"meta",provider,model[,effort]} then {type:"delta",text}... then {type:"done"} or {type:"error",error}.
   const enc = new TextEncoder();
   const line = (obj) => enc.encode(JSON.stringify(obj) + "\n");
   const stream = new ReadableStream({
     async start(controller) {
-      controller.enqueue(line({ type: "meta", provider: name, model: opened.model }));
+      controller.enqueue(line({ type: "meta", provider: name, model: opened.model, ...(effort && { effort }) }));
       let any = false;
       try {
         for await (const text of opened.pieces) {

@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react"
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react"
 import { motion } from "motion/react"
 import { AnimatedShinyText } from "@/components/ui/animated-shiny-text"
 import { BlurFade } from "@/components/ui/blur-fade"
 import { BorderBeam } from "@/components/ui/border-beam"
-import { ArrowUp, LogOut, Plus } from "@/components/icons"
-import { label, quotaMessage, readStream, store } from "@/lib/api"
+import { ArrowUp, Check, ChevronDown, Gauge, LogOut, Plus } from "@/components/icons"
+import { EFFORTS, effortLabel, label, quotaMessage, readStream, store } from "@/lib/api"
 import { renderMarkdown } from "@/lib/markdown"
 import { cn } from "@/lib/utils"
 
@@ -26,6 +26,7 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
     const saved = store.provider()
     return saved && providers.includes(saved) ? saved : providers[0] || ""
   })
+  const [effort, setEffort] = useState(() => store.effort(provider))
   const [input, setInput] = useState("")
   const busy = messages.some((m) => m.pending)
   const logRef = useRef<HTMLDivElement>(null)
@@ -54,6 +55,12 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
   function pickProvider(p: string) {
     setProvider(p)
     store.setProvider(p)
+    setEffort(store.effort(p))
+  }
+
+  function pickEffort(v: string) {
+    setEffort(v)
+    store.setEffort(provider, v)
   }
 
   function update(id: number, patch: Partial<Msg> | ((m: Msg) => Partial<Msg>)) {
@@ -92,14 +99,17 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + token },
-        body: JSON.stringify({ provider, messages: turns }),
+        body: JSON.stringify({ provider, messages: turns, ...(effort && { effort }) }),
       })
       if (res.status === 401) return onLogout("Your token was rejected. Log in again.")
       const type = res.headers.get("content-type") || ""
       if (res.ok && type.includes("ndjson")) {
         let failed = ""
         await readStream(res, (ev) => {
-          if (ev.type === "meta") meta = label(ev.provider) + " · " + ev.model
+          if (ev.type === "meta") {
+            meta = label(ev.provider) + " · " + ev.model
+            if (ev.effort) meta += " · " + effortLabel(ev.provider, ev.effort).toLowerCase() + " effort"
+          }
           else if (ev.type === "delta") {
             got = true
             text_ += ev.text
@@ -147,15 +157,16 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
 
   return (
     <div className="flex h-full flex-col">
-      <header className="z-10 border-b border-line bg-paper/85 backdrop-blur-md">
-        <div className="mx-auto flex max-w-[760px] items-center justify-between gap-2 px-3 py-2.5 sm:px-4">
-          <div className="flex min-w-0 items-center gap-3 sm:gap-4">
-            <span className="font-display text-[22px] leading-none">
+      <header className="relative z-20 border-b border-line bg-paper/85 backdrop-blur-md">
+        <div className="relative mx-auto flex max-w-[760px] items-center justify-between gap-2 px-3 py-2.5 sm:px-4">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <span className="shrink-0 font-display text-[20px] leading-none sm:text-[22px]">
               LLM<span className="text-ember">ate</span>
             </span>
             <ProviderSwitch providers={providers} value={provider} onChange={pickProvider} disabled={busy} />
+            <EffortPicker provider={provider} value={effort} onChange={pickEffort} disabled={busy} />
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center sm:gap-1">
             <HeaderButton onClick={newChat} disabled={busy} label="New chat"><Plus /></HeaderButton>
             <HeaderButton onClick={() => onLogout()} label="Log out"><LogOut /></HeaderButton>
           </div>
@@ -217,7 +228,7 @@ function HeaderButton({ children, label, ...props }: { children: React.ReactNode
     <button
       type="button"
       title={label}
-      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm text-muted transition-colors hover:bg-ink/5 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
+      className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm sm:px-2.5 text-muted transition-colors hover:bg-ink/5 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
       {...props}
     >
       {children}
@@ -254,7 +265,7 @@ function ProviderSwitch({ providers, value, onChange, disabled }: {
             disabled={disabled}
             onClick={() => onChange(p)}
             className={cn(
-              "relative rounded-full px-3 py-1 text-[13px] font-medium transition-colors",
+              "relative rounded-full px-2.5 py-1 text-[13px] sm:px-3 font-medium transition-colors",
               on ? "text-paper" : "text-muted hover:text-ink",
               disabled && "cursor-default",
             )}
@@ -271,6 +282,117 @@ function ProviderSwitch({ providers, value, onChange, disabled }: {
         )
       })}
     </div>
+  )
+}
+
+// Effort for the selected provider, with a short note on what each level does.
+// The menu is placed against the header row so it stays on screen on phones.
+function EffortPicker({ provider, value, onChange, disabled }: {
+  provider: string; value: string; onChange: (v: string) => void; disabled: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [left, setLeft] = useState(0)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const id = useId()
+  const spec = EFFORTS[provider]
+
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current || !menuRef.current) return
+    const row = menuRef.current.offsetParent as HTMLElement | null
+    if (!row) return
+    const b = btnRef.current.getBoundingClientRect()
+    const r = row.getBoundingClientRect()
+    const w = menuRef.current.offsetWidth
+    setLeft(Math.max(12, Math.min(b.left - r.left, r.width - w - 12)))
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node
+      if (!menuRef.current?.contains(t) && !btnRef.current?.contains(t)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setOpen(false); btnRef.current?.focus() }
+    }
+    document.addEventListener("pointerdown", onDown)
+    document.addEventListener("keydown", onKey)
+    return () => { document.removeEventListener("pointerdown", onDown); document.removeEventListener("keydown", onKey) }
+  }, [open])
+
+  useEffect(() => { if (disabled) setOpen(false) }, [disabled])
+
+  if (!spec) return null
+  const current = spec.options.find((o) => o.value === value) || spec.options[0]
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        disabled={disabled}
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-controls={id}
+        title={"Effort: " + current.label + ". " + current.hint}
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "inline-flex shrink-0 items-center gap-1 rounded-full border border-line bg-surface py-1 pr-2 pl-2 text-[13px] font-medium text-ink transition-colors hover:border-line-strong",
+          open && "border-line-strong",
+          disabled && "cursor-default opacity-60 hover:border-line",
+        )}
+      >
+        <Gauge width={15} height={15} className="text-ember" />
+        <span className="sr-only sm:not-sr-only">Effort:&nbsp;</span>
+        <span>{current.label}</span>
+        <ChevronDown width={14} height={14} className={cn("hidden text-muted transition-transform sm:block", open && "rotate-180")} />
+      </button>
+      {open && (
+        <motion.div
+          ref={menuRef}
+          id={id}
+          role="radiogroup"
+          aria-label={label(provider) + " effort"}
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.14 }}
+          style={{ left }}
+          className="absolute top-full mt-1.5 w-[min(320px,calc(100%-24px))] rounded-2xl border border-line bg-surface p-1.5 shadow-[0_16px_40px_-18px_rgb(28_26_23/0.45)]"
+        >
+          <p className="px-2.5 pt-1.5 pb-1 font-mono text-[11px] tracking-wide text-muted">
+            {provider === "gemini" ? "How long Gemini thinks before answering" : "How much Groq reasons before answering"}
+          </p>
+          {spec.options.map((o) => {
+            const on = o.value === current.value
+            return (
+              <button
+                key={o.value}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => { onChange(o.value); setOpen(false); btnRef.current?.focus() }}
+                className={cn(
+                  "flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-ink/5",
+                  on && "bg-ink/5",
+                )}
+              >
+                <span className={cn("mt-1 grid size-4 shrink-0 place-items-center", on ? "text-ember" : "text-transparent")}>
+                  <Check width={15} height={15} />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-[14px] font-medium leading-5">
+                    {o.label}
+                    {o.value === spec.default && <span className="ml-1.5 font-mono text-[10.5px] font-normal tracking-wide text-muted">default</span>}
+                  </span>
+                  <span className="block text-[13px] leading-[1.45] text-muted">{o.hint}</span>
+                </span>
+              </button>
+            )
+          })}
+        </motion.div>
+      )}
+    </>
   )
 }
 

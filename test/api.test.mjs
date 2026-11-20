@@ -78,8 +78,8 @@ test("verify succeeds and lists configured providers", async () => {
   assert.deepEqual((await only.json()).providers, ["groq"]);
 });
 
-const chat = (provider, messages = [{ role: "user", content: "x" }]) =>
-  req("/api/chat", { body: { provider, messages } });
+const chat = (provider, messages = [{ role: "user", content: "x" }], extra = {}) =>
+  req("/api/chat", { body: { provider, messages, ...extra } });
 
 test("gemini: streams text, maps roles and sends system prompt", async () => {
   mockFetch(() => geminiOk());
@@ -101,6 +101,7 @@ test("gemini: streams text, maps roles and sends system prompt", async () => {
   const sent = JSON.parse(calls[0].opts.body);
   assert.deepEqual(sent.contents.map((c) => c.role), ["user", "model", "user"]);
   assert.equal(sent.systemInstruction.parts[0].text, "be nice");
+  assert.equal(sent.generationConfig, undefined, "no effort picked: model default");
 });
 
 test("groq: streams text and calls only Groq", async () => {
@@ -116,6 +117,38 @@ test("groq: streams text and calls only Groq", async () => {
   const sent = JSON.parse(calls[0].opts.body);
   assert.equal(sent.stream, true);
   assert.deepEqual(sent.messages[0], { role: "system", content: "be nice" });
+  assert.equal("reasoning_effort" in sent, false, "no effort picked: model default");
+});
+
+test("gemini effort becomes a thinking level, thoughts stay hidden", async () => {
+  const thought = { candidates: [{ content: { parts: [{ text: "pondering", thought: true }] } }] };
+  mockFetch(() => sse([thought, gem("answer")]));
+  const evs = await events(await handle(chat("gemini", undefined, { effort: "high" }), env));
+  assert.deepEqual(evs[0], { type: "meta", provider: "gemini", model: "gemini-3.5-flash-lite", effort: "high" });
+  assert.equal(textOf(evs), "answer");
+  const sent = JSON.parse(calls[0].opts.body);
+  assert.deepEqual(sent.generationConfig.thinkingConfig, { thinkingLevel: "high", includeThoughts: true });
+
+  calls = [];
+  mockFetch(() => geminiOk());
+  await events(await handle(chat("gemini", undefined, { effort: "minimal" }), env));
+  assert.deepEqual(JSON.parse(calls[0].opts.body).generationConfig.thinkingConfig, { thinkingLevel: "minimal" });
+});
+
+test("groq effort becomes reasoning_effort, reasoning stays hidden", async () => {
+  mockFetch(() => sse([{ choices: [{ delta: { reasoning: "hmm" } }] }, grq("answer")]));
+  const evs = await events(await handle(chat("groq", undefined, { effort: "low" }), env));
+  assert.equal(evs[0].effort, "low");
+  assert.equal(textOf(evs), "answer");
+  assert.equal(JSON.parse(calls[0].opts.body).reasoning_effort, "low");
+});
+
+test("400 on an effort the provider doesn't take", async () => {
+  mockFetch(() => { throw new Error("should not be called"); });
+  for (const [p, effort] of [["groq", "minimal"], ["gemini", "max"], ["gemini", 3], ["groq", "toString"]]) {
+    assert.equal((await handle(chat(p, undefined, { effort }), env)).status, 400, p + " " + effort);
+  }
+  assert.equal(calls.length, 0);
 });
 
 test("an error mid-stream ends with an error event", async () => {
