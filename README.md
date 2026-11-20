@@ -167,15 +167,73 @@ Of the pieces in the diagrams, four handle what you type. **Your browser** holds
 - Netlify caps how long a synchronous function may run (check [Netlify's function limits](https://docs.netlify.com/functions/overview/#default-deployment-options) for your plan). The function gives up if the provider sends nothing for 20 seconds. If Netlify's cap cuts a long streamed answer short, the text so far stays in the chat, marked as stopped early.
 - History is capped at the last 40 messages and about 32,000 characters.
 
-## Local development
+## Run it locally
 
-```sh
-npm install
-npm test                 # unit tests for the function (providers mocked)
-npm run typecheck        # TypeScript check for the frontend
-npm i -g netlify-cli
-cp .env.example .env     # fill in your values
-netlify dev              # runs Vite and the function together at http://localhost:8888
-```
+You can run the whole app (frontend and function) on your own computer with your own API keys.
+
+**Do you need a Netlify account?** No. `netlify dev` runs without logging in and without linking the folder to a Netlify site. It reads your keys from a local `.env` file instead of Netlify's environment variables. You only need an account to deploy.
+
+### What you need
+
+- [Node.js](https://nodejs.org) 20.19 or newer (22 matches what Netlify uses) and npm.
+- At least one free API key: Gemini, Groq, or both. See [Get the free API keys](#1-get-the-free-api-keys) above. These are your own keys, so free-tier usage counts against your own quota.
+
+### Steps
+
+1. **Clone and install.**
+
+   ```sh
+   git clone https://github.com/willamesoares/llmate.git
+   cd llmate
+   npm install
+   ```
+
+2. **Install the Netlify CLI.** It runs the Vite dev server and the function together behind one address, the same way Netlify routes them in production.
+
+   ```sh
+   npm install -g netlify-cli
+   ```
+
+   If you'd rather not install it globally, use `npx netlify-cli dev` in step 5 instead.
+
+3. **Create your `.env` file.**
+
+   ```sh
+   cp .env.example .env
+   npm run token            # prints a random access token
+   ```
+
+   Open `.env` and fill it in:
+
+   ```sh
+   ACCESS_TOKEN=paste-the-token-from-npm-run-token
+   GEMINI_API_KEY=your-gemini-key     # leave empty to skip Gemini
+   GROQ_API_KEY=your-groq-key         # leave empty to skip Groq
+   ```
+
+   The optional `GEMINI_MODEL`, `GROQ_MODEL` and `SYSTEM_PROMPT` lines work the same as on Netlify (see the table in [Create the Netlify site](#3-create-the-netlify-site)). `.env` is in `.gitignore`, so it won't be committed.
+
+4. **Optional: run the checks.**
+
+   ```sh
+   npm test                 # unit tests for the function (providers mocked, no keys needed)
+   npm run typecheck        # TypeScript check for the frontend
+   ```
+
+5. **Start it.**
+
+   ```sh
+   netlify dev
+   ```
+
+   The first run can take a minute while the CLI downloads its helpers. When it prints `Local dev server ready: http://localhost:8888`, open that address (not Vite's own port 5173, which has no `/api`), paste the `ACCESS_TOKEN` from your `.env`, and chat. Edits under `src/` reload in the browser. After you change `.env` or the function, stop `netlify dev` with Ctrl+C and start it again.
+
+### If something goes wrong
+
+- **The CLI asks you to log in or link a site.** You can skip it. Nothing in this project needs `netlify login` or `netlify link` to run locally.
+- **"That token is not valid".** The token you pasted must match `ACCESS_TOKEN` in `.env` exactly, and be at least 16 characters.
+- **A provider is missing from the dropdown.** Its key is empty in `.env`, or you changed `.env` without restarting `netlify dev`.
+- **A provider replies with an error.** Check the key in its console, and check the terminal running `netlify dev`, where the function logs the reason.
+- **A blank page.** Make sure you opened port 8888. The page uses the same strict Content-Security-Policy locally as in production, and `vite.config.ts` loads React's dev refresh code as a file so the policy doesn't block it.
 
 To add another Magic UI component, run `npx shadcn@latest add @magicui/<name>` (the registry is set up in `components.json`), or copy the file from the [Magic UI docs](https://magicui.design/docs) into `src/components/ui/`.
