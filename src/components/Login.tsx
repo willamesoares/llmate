@@ -52,8 +52,8 @@ export function Login({ message, onSuccess }: { message?: string; onSuccess: (pr
               <span className="font-mono text-[11px] font-medium tracking-[0.14em] text-muted uppercase">
                 Private · token only
               </span>
-              <h1 className="font-serif text-[44px] leading-none tracking-tight">
-                LLM<em className="text-ember">ate</em>
+              <h1 className="font-display text-[40px] leading-none">
+                LLM<span className="text-ember">ate</span>
               </h1>
               <p className="text-[15px] text-muted">Paste your access token to start chatting.</p>
             </div>

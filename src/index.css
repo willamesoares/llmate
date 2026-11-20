@@ -1,8 +1,13 @@
 @import "tailwindcss";
-@import "@fontsource-variable/instrument-sans";
-@import "@fontsource/instrument-serif/400.css";
-@import "@fontsource/instrument-serif/400-italic.css";
-@import "@fontsource-variable/jetbrains-mono";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-sans/400-italic.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+:root { --display-weight: 600; --display-tracking: -0.03em; }
 
 /* Dark mode follows the system setting. */
 @custom-variant dark (@media (prefers-color-scheme: dark));
@@ -39,9 +44,9 @@
 }
 
 @theme inline {
-  --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "IBM Plex Mono", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   /* Names Magic UI / shadcn components expect. */
   --color-background: var(--surface);
@@ -91,14 +96,16 @@ body {
   .caret { animation: none; }
 }
 
+.font-display { font-family: var(--font-display); font-weight: var(--display-weight); letter-spacing: var(--display-tracking); }
+
 /* ---------- Markdown inside messages ---------- */
 .md { overflow-wrap: anywhere; }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 .md p, .md ul, .md ol, .md pre, .md blockquote, .md table { margin: 0 0 .8em; }
 .md h1, .md h2, .md h3, .md h4 {
-  margin: 1.2em 0 .45em; line-height: 1.2; font-family: var(--font-serif); font-weight: 400;
-  letter-spacing: -.01em;
+  margin: 1.2em 0 .45em; line-height: 1.25; font-family: var(--font-display); font-weight: var(--display-weight);
+  letter-spacing: var(--display-tracking);
 }
 .md h1 { font-size: 1.75em; } .md h2 { font-size: 1.5em; } .md h3 { font-size: 1.25em; } .md h4 { font-size: 1.1em; }
 .md strong { font-weight: 620; }

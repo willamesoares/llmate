@@ -150,8 +150,8 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
       <header className="z-10 border-b border-line bg-paper/85 backdrop-blur-md">
         <div className="mx-auto flex max-w-[760px] items-center justify-between gap-2 px-3 py-2.5 sm:px-4">
           <div className="flex min-w-0 items-center gap-3 sm:gap-4">
-            <span className="font-serif text-[26px] leading-none tracking-tight">
-              LLM<em className="text-ember">ate</em>
+            <span className="font-display text-[22px] leading-none">
+              LLM<span className="text-ember">ate</span>
             </span>
             <ProviderSwitch providers={providers} value={provider} onChange={pickProvider} disabled={busy} />
           </div>
@@ -277,8 +277,8 @@ function ProviderSwitch({ providers, value, onChange, disabled }: {
 function EmptyState({ provider }: { provider: string }) {
   return (
     <BlurFade direction="up" offset={10} duration={0.5} className="mt-[16vh] text-center">
-      <h2 className="font-serif text-[clamp(34px,7vw,52px)] leading-[1.05] tracking-tight">
-        What's on <em className="text-ember">your</em> mind?
+      <h2 className="font-display text-[clamp(30px,6vw,44px)] leading-[1.1]">
+        What's on <span className="text-ember">your</span> mind?
       </h2>
       <p className="mt-3 text-[15px] text-muted">
         {provider ? <>Replies come from {label(provider)}. Switch providers any time, even mid-chat.</> : "No provider is configured on the server."}
