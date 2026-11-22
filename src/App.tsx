@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react"
 import { Login } from "@/components/Login"
 import { Chat } from "@/components/Chat"
-import { store, verify } from "@/lib/api"
+import { store, verify, type Model } from "@/lib/api"
 
-type View = { name: "boot" } | { name: "login"; message?: string } | { name: "chat"; providers: string[] }
+type View = { name: "boot" } | { name: "login"; message?: string } | { name: "chat"; models: Model[] }
 
 export default function App() {
   const [view, setView] = useState<View>({ name: "boot" })
@@ -13,11 +13,11 @@ export default function App() {
     const token = store.token()
     if (!token) return setView({ name: "login" })
     verify(token)
-      .then(({ status, providers }) => {
-        if (status === 200) setView({ name: "chat", providers })
+      .then(({ status, models }) => {
+        if (status === 200) setView({ name: "chat", models })
         else { store.clearToken(); setView({ name: "login", message: "Your saved token is no longer valid." }) }
       })
-      .catch(() => setView({ name: "chat", providers: [] }))
+      .catch(() => setView({ name: "chat", models: [] }))
   }, [])
 
   const logout = (message?: string) => {
@@ -27,7 +27,7 @@ export default function App() {
 
   if (view.name === "boot") return null
   if (view.name === "login") {
-    return <Login message={view.message} onSuccess={(providers) => setView({ name: "chat", providers })} />
+    return <Login message={view.message} onSuccess={(models) => setView({ name: "chat", models })} />
   }
-  return <Chat providers={view.providers} onLogout={logout} />
+  return <Chat models={view.models} onLogout={logout} />
 }

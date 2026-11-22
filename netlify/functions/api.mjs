@@ -80,7 +80,7 @@ async function upstreamError(name, res) {
     body = await res.text();
     try {
       const j = JSON.parse(body);
-      // OpenAI style {error:{message}}, Cohere {message}, Cloudflare {errors:[{message}]}.
+      // OpenAI style {error:{message}}, plain {message}, Cloudflare {errors:[{message}]}.
       detail = (typeof j?.error === "string" ? j.error : j?.error?.message) || j?.message || j?.errors?.[0]?.message || j?.detail || body;
     } catch {
       detail = body;
@@ -94,12 +94,10 @@ async function upstreamError(name, res) {
 
 // Work out from a 429 whether a daily quota or a short rate limit was hit,
 // and roughly when to retry. Gemini names the quota (e.g. "...PerDay...");
-// Groq says "requests per day (RPD)" or "tokens per day (TPD)"; OpenRouter
-// "free-models-per-day"; Cloudflare "daily free allocation". Cohere trial keys
-// have a monthly cap.
+// Groq says "requests per day (RPD)" or "tokens per day (TPD)"; Cloudflare
+// "daily free allocation".
 export function classifyQuota(body, retryAfter) {
   const text = String(body || "");
-  const monthly = /per[ -]?month|monthly|\/ ?month|a month/i.test(text);
   const daily = /per[ -]?day|\bRPD\b|\bTPD\b|daily/i.test(text);
   let seconds = null;
   const m = text.match(/(?:retry|try again) in ((?:[\d.]+[hms])+)/i);
@@ -111,14 +109,13 @@ export function classifyQuota(body, retryAfter) {
   } else if (retryAfter && /^\d+$/.test(retryAfter)) {
     seconds = Number(retryAfter);
   }
-  return { kind: monthly ? "monthly" : daily ? "daily" : "rate", retryAfterSeconds: seconds === null ? null : Math.ceil(seconds) };
+  return { kind: daily ? "daily" : "rate", retryAfterSeconds: seconds === null ? null : Math.ceil(seconds) };
 }
 
 // Each provider opens a streaming request. A failed request throws (so quota
 // errors become a normal JSON 429); a successful one returns an async
 // iterator of text pieces.
-async function openGemini(messages, system, env, timer, effort) {
-  const model = env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+async function openGemini(model, messages, system, env, timer, effort) {
   const body = {
     contents: messages.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
@@ -154,79 +151,138 @@ async function openGemini(messages, system, env, timer, effort) {
   return { model, pieces: pieces() };
 }
 
-// Groq, OpenRouter, Cloudflare Workers AI, Cohere and NVIDIA all
-// speak the OpenAI chat-completions streaming format, so one opener serves them.
-function openAICompatible(label, url, keyVar, modelVar, defaultModel, { effortParam } = {}) {
-  return async function open(messages, system, env, timer, effort) {
-    const model = env[modelVar] || defaultModel;
+// Some open models (DeepSeek R1 distills, Qwen) write their reasoning into the
+// reply itself, wrapped in <think>...</think>. Drop a leading think block so
+// only the answer is shown, the same as for models that stream it separately.
+export function thinkStripper() {
+  let state = "start"; // start -> (thinking ->) answer
+  let buf = "";
+  return (text) => {
+    if (state === "answer") return text;
+    buf += text;
+    if (state === "start") {
+      const lead = buf.trimStart();
+      if (!lead) return "";
+      if ("<think>".startsWith(lead)) return ""; // could still be the opening tag
+      if (!lead.startsWith("<think>")) {
+        state = "answer";
+        const out = buf;
+        buf = "";
+        return out;
+      }
+      state = "thinking";
+    }
+    const end = buf.indexOf("</think>");
+    if (end < 0) {
+      buf = buf.slice(-8); // keep enough to catch a tag split across chunks
+      return "";
+    }
+    state = "answer";
+    const out = buf.slice(end + 8).trimStart();
+    buf = "";
+    return out;
+  };
+}
+
+// Groq and Cloudflare Workers AI speak the OpenAI chat-completions streaming
+// format, so one opener serves both.
+function openAICompatible(label, url, keyVar) {
+  return async function open(model, messages, system, env, timer, effort, extra) {
     const res = await fetch(typeof url === "function" ? url(env) : url, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${env[keyVar]}` },
       body: JSON.stringify({
         model,
         stream: true,
+        ...extra,
         // Reasoning models stream their thinking in a separate field (ignored
         // below); it keeps the idle timer alive while the model thinks.
-        ...(effort && effortParam && { [effortParam]: effort }),
+        ...(effort && { reasoning_effort: effort }),
         messages: system ? [{ role: "system", content: system }, ...messages] : messages,
       }),
       signal: timer.signal,
     });
     if (!res.ok) throw await upstreamError(label, res);
     async function* pieces() {
+      const strip = thinkStripper();
       for await (const ev of sseEvents(res.body, timer.poke)) {
         if (ev.error) throw new Error(`${label}: ` + (ev.error.message || "stream error"));
-        const text = ev.choices?.[0]?.delta?.content;
-        if (typeof text === "string" && text) yield text;
+        const raw = ev.choices?.[0]?.delta?.content;
+        const text = typeof raw === "string" && raw ? strip(raw) : "";
+        if (text) yield text;
       }
     }
     return { model, pieces: pieces() };
   };
 }
 
-const openGroq = openAICompatible(
-  "Groq", "https://api.groq.com/openai/v1/chat/completions", "GROQ_API_KEY", "GROQ_MODEL", "openai/gpt-oss-120b",
-  { effortParam: "reasoning_effort" },
-);
-// "openrouter/free" picks one of OpenRouter's free models for each request.
-const openOpenRouter = openAICompatible(
-  "OpenRouter", "https://openrouter.ai/api/v1/chat/completions", "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "openrouter/free",
-);
+const openGroq = openAICompatible("Groq", "https://api.groq.com/openai/v1/chat/completions", "GROQ_API_KEY");
 const openCloudflare = openAICompatible(
   "Cloudflare",
   (env) => `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID)}/ai/v1/chat/completions`,
-  "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  "CLOUDFLARE_API_TOKEN",
 );
-const openCohere = openAICompatible(
-  "Cohere", "https://api.cohere.ai/compatibility/v1/chat/completions", "COHERE_API_KEY", "COHERE_MODEL", "command-a-plus-05-2026",
-);
-const openNvidia = openAICompatible(
-  "NVIDIA", "https://integrate.api.nvidia.com/v1/chat/completions", "NVIDIA_API_KEY", "NVIDIA_MODEL", "meta/llama-3.3-70b-instruct",
-);
-
-// Effort levels each provider accepts. Gemini 3.x takes a thinking level
-// ("minimal" is as close to off as Flash-Lite allows); Groq's gpt-oss takes a
-// reasoning effort. Leaving effort out uses the model's own default.
-export const EFFORTS = {
-  gemini: ["minimal", "low", "medium", "high"],
-  groq: ["low", "medium", "high"],
-};
 
 // Display order. A provider is offered only when all of its env vars are set.
 const PROVIDERS = {
   gemini: { keys: ["GEMINI_API_KEY"], open: openGemini },
   groq: { keys: ["GROQ_API_KEY"], open: openGroq },
-  openrouter: { keys: ["OPENROUTER_API_KEY"], open: openOpenRouter },
   cloudflare: { keys: ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"], open: openCloudflare },
-  cohere: { keys: ["COHERE_API_KEY"], open: openCohere },
-  nvidia: { keys: ["NVIDIA_API_KEY"], open: openNvidia },
 };
+
+// The models offered for each provider, all on its free tier (as of November
+// 2026). The first one is the provider's default. "effort" lists the levels a
+// model takes and the one picked by default; models without it get none.
+// Gemini 3.x takes a thinking level; the others take a reasoning effort.
+const GEMINI_LEVELS = ["minimal", "low", "medium", "high"];
+const GPT_OSS = { levels: ["low", "medium", "high"], default: "medium" };
+export const MODELS = {
+  gemini: [
+    { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", effort: { levels: GEMINI_LEVELS, default: "minimal" } },
+    { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+    { id: "gemini-3-flash-preview", label: "Gemini 3 Flash (preview)", effort: { levels: GEMINI_LEVELS, default: "high" } },
+    { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
+  ],
+  groq: [
+    { id: "openai/gpt-oss-120b", label: "GPT-OSS 120B", effort: GPT_OSS },
+    { id: "openai/gpt-oss-20b", label: "GPT-OSS 20B", effort: GPT_OSS },
+    // Groq returns Qwen's reasoning inside the reply unless told to hide it.
+    { id: "qwen/qwen3.8-27b", label: "Qwen 3.8 27B (preview)", extra: { reasoning_format: "hidden" } },
+  ],
+  cloudflare: [
+    { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", label: "Llama 3.3 70B" },
+    { id: "@cf/meta/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout 17B" },
+    { id: "@cf/meta/llama-3.1-8b-instruct-fp8-fast", label: "Llama 3.1 8B" },
+    { id: "@cf/openai/gpt-oss-120b", label: "GPT-OSS 120B", effort: GPT_OSS },
+    { id: "@cf/openai/gpt-oss-20b", label: "GPT-OSS 20B", effort: GPT_OSS },
+    { id: "@cf/qwen/qwen3.8-27b", label: "Qwen 3.8 27B", effort: { levels: ["low", "medium", "xhigh"], default: "low" } },
+    { id: "@cf/qwen/qwen3-30b-a3b-fp8", label: "Qwen3 30B" },
+    { id: "@cf/qwen/qwen2.5-coder-32b-instruct", label: "Qwen 2.5 Coder 32B" },
+    { id: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", label: "DeepSeek R1 Distill 32B" },
+    { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", label: "Mistral Small 3.1 24B" },
+    { id: "@cf/google/gemma-4-26b-a4b-it", label: "Gemma 4 26B" },
+    { id: "@cf/zai-org/glm-4.7-flash", label: "GLM 4.7 Flash" },
+    { id: "@cf/nvidia/nemotron-3-120b-a12b", label: "Nemotron 3 120B" },
+    { id: "@cf/ibm-granite/granite-4.0-h-micro", label: "Granite 4.0 Micro" },
+    { id: "@cf/aisingapore/gemma-sea-lion-v4-27b-it", label: "SEA-LION v4 27B" },
+  ],
+};
+
+export const findModel = (provider, id) =>
+  Object.hasOwn(MODELS, provider) ? MODELS[provider].find((m) => m.id === id) || null : null;
 
 const configured = (env, name) => PROVIDERS[name].keys.every((k) => env[k]);
 
 // Providers whose API keys are set, in display order.
 export function availableProviders(env) {
   return Object.keys(PROVIDERS).filter((name) => configured(env, name));
+}
+
+// What the model picker shows: every model of every configured provider.
+export function availableModels(env) {
+  return availableProviders(env).flatMap((provider) =>
+    MODELS[provider].map(({ id, label, effort }) => ({ provider, id, label, ...(effort && { effort }) })),
+  );
 }
 
 // ---- Saved chats (Netlify Blobs) ----
@@ -280,6 +336,7 @@ const summary = (c) => ({
   id: c.id,
   title: c.title,
   provider: c.provider,
+  model: c.model,
   effort: c.effort,
   createdAt: c.createdAt,
   updatedAt: c.updatedAt,
@@ -332,13 +389,15 @@ async function handleChats(action, payload, store, owner, now) {
       return json(400, { error: `messages must be at most ${MAX_SAVED_MESSAGES} user/assistant turns and ${MAX_SAVED_CHARS} characters` });
     }
     const provider = Object.hasOwn(PROVIDERS, payload?.provider) ? payload.provider : null;
-    const effort = provider && EFFORTS[provider]?.includes(payload?.effort) ? payload.effort : null;
+    const model = findModel(provider, payload?.model);
+    const effort = model?.effort?.levels.includes(payload?.effort) ? payload.effort : null;
     const existing = await store.get(key, { type: "json" });
     const chat = {
       id,
       // Saving never renames: the title comes from the first message, or a rename.
       title: existing?.title || cleanTitle(payload?.title) || titleFrom(messages),
       provider,
+      model: model?.id || null,
       effort,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
@@ -384,7 +443,7 @@ export async function handle(req, env, { store = defaultStore, now = () => new D
   if (!tokenMatches(token, env.ACCESS_TOKEN)) return json(401, { error: "Invalid token" });
 
   const path = new URL(req.url).pathname;
-  if (path.endsWith("/verify")) return json(200, { ok: true, providers: availableProviders(env) });
+  if (path.endsWith("/verify")) return json(200, { ok: true, providers: availableProviders(env), models: availableModels(env) });
   const chats = path.match(/\/api\/chats\/(list|get|save|rename|delete)$/);
   if (!chats && !path.endsWith("/chat")) return json(404, { error: "Not found" });
 
@@ -412,16 +471,21 @@ export async function handle(req, env, { store = defaultStore, now = () => new D
     return json(400, { error: "provider must be one of: " + Object.keys(PROVIDERS).join(", ") });
   }
   if (!configured(env, name)) return json(400, { error: `${name} is not configured on the server` });
+  // Leaving the model out picks the provider's default (older clients send none).
+  const model = payload?.model == null ? MODELS[name][0] : findModel(name, payload.model);
+  if (!model) {
+    return json(400, { error: `model for ${name} must be one of: ` + MODELS[name].map((m) => m.id).join(", ") });
+  }
   const effort = payload?.effort ?? null;
-  if (effort !== null && !(EFFORTS[name] || []).includes(effort)) {
-    if (!EFFORTS[name]) return json(400, { error: `${name} does not take an effort level` });
-    return json(400, { error: `effort for ${name} must be one of: ` + EFFORTS[name].join(", ") });
+  if (effort !== null && !model.effort?.levels.includes(effort)) {
+    if (!model.effort) return json(400, { error: `${model.id} does not take an effort level` });
+    return json(400, { error: `effort for ${model.id} must be one of: ` + model.effort.levels.join(", ") });
   }
 
   const timer = idleTimer();
   let opened;
   try {
-    opened = await PROVIDERS[name].open(messages, env.SYSTEM_PROMPT || "", env, timer, effort);
+    opened = await PROVIDERS[name].open(model.id, messages, env.SYSTEM_PROMPT || "", env, timer, effort, model.extra);
   } catch (err) {
     timer.stop();
     const reason = err.name === "AbortError" ? `${name}: timeout` : err.message;

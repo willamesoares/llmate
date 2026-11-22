@@ -3,9 +3,9 @@ import { BlurFade } from "@/components/ui/blur-fade"
 import { DotPattern } from "@/components/ui/dot-pattern"
 import { MagicCard } from "@/components/ui/magic-card"
 import { ArrowRight, Key } from "@/components/icons"
-import { store, verify } from "@/lib/api"
+import { store, verify, type Model } from "@/lib/api"
 
-export function Login({ message, onSuccess }: { message?: string; onSuccess: (providers: string[]) => void }) {
+export function Login({ message, onSuccess }: { message?: string; onSuccess: (models: Model[]) => void }) {
   const [token, setToken] = useState("")
   const [error, setError] = useState(message || "")
   const [busy, setBusy] = useState(false)
@@ -17,8 +17,8 @@ export function Login({ message, onSuccess }: { message?: string; onSuccess: (pr
     setBusy(true)
     setError("")
     try {
-      const { status, providers } = await verify(t)
-      if (status === 200) { store.setToken(t); onSuccess(providers) }
+      const { status, models } = await verify(t)
+      if (status === 200) { store.setToken(t); onSuccess(models) }
       else setError(status === 401 ? "That token is not valid." : "Server error (" + status + ").")
     } catch {
       setError("Could not reach the server.")

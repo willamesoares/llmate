@@ -189,7 +189,7 @@ function Row({ chat, active, disabled, onOpen, onRename, onDelete }: {
         onClick={onOpen}
         disabled={disabled && !active}
         aria-current={active ? "true" : undefined}
-        title={chat.title + (chat.provider ? " · " + label(chat.provider) : "")}
+        title={chat.title + (chat.provider ? " · " + label(chat.provider) + (chat.model ? " · " + chat.model : "") : "")}
         className="min-w-0 flex-1 truncate py-2 pr-1 pl-2.5 text-left text-[14px] leading-5 disabled:cursor-default"
       >
         {active && <span className="mr-1.5 inline-block size-1.5 -translate-y-px rounded-full bg-ember align-middle" />}

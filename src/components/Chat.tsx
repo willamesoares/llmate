@@ -5,7 +5,7 @@ import { BlurFade } from "@/components/ui/blur-fade"
 import { BorderBeam } from "@/components/ui/border-beam"
 import { History } from "@/components/History"
 import { ArrowUp, Check, ChevronDown, Gauge, LogOut, PanelLeft, Plus } from "@/components/icons"
-import { EFFORTS, effortLabel, label, quotaMessage, readStream, store } from "@/lib/api"
+import { effortLabel, effortOptions, findModel, label, modelKey, quotaMessage, readStream, store, type Model } from "@/lib/api"
 import { chats, newChatId, Unauthorized, type ChatSummary, type SavedMessage } from "@/lib/chats"
 import { renderMarkdown } from "@/lib/markdown"
 import { cn } from "@/lib/utils"
@@ -30,13 +30,15 @@ const toSaved = (list: Msg[]): SavedMessage[] =>
     role, content, ...(meta && { meta }), ...(error && { error }), ...(notice && { notice }),
   }))
 
-export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (message?: string) => void }) {
+export function Chat({ models, onLogout }: { models: Model[]; onLogout: (message?: string) => void }) {
   const [messages, setMessages] = useState<Msg[]>([])
-  const [provider, setProvider] = useState(() => {
-    const saved = store.provider()
-    return saved && providers.includes(saved) ? saved : providers[0] || ""
+  const providers = useMemo(() => [...new Set(models.map((m) => m.provider))], [models])
+  const [model, setModel] = useState<Model | undefined>(() => {
+    const saved = store.model()
+    return models.find((m) => modelKey(m) === saved) || models[0]
   })
-  const [effort, setEffort] = useState(() => store.effort(provider))
+  const provider = model?.provider || ""
+  const [effort, setEffort] = useState(() => store.effort(model))
   const [input, setInput] = useState("")
   const busy = messages.some((m) => m.pending)
   const logRef = useRef<HTMLDivElement>(null)
@@ -63,15 +65,15 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
       .finally(() => setSavedLoading(false))
   }, [storageFailed])
 
-  // Save once a reply has finished (or failed), with the chat's provider and effort.
+  // Save once a reply has finished (or failed), with the chat's model and effort.
   useEffect(() => {
     const id = saveNext.current
     if (busy || !id) return
     saveNext.current = null
-    chats.save({ id, provider, effort, messages: toSaved(messages) })
+    chats.save({ id, provider, model: model?.id || "", effort, messages: toSaved(messages) })
       .then((c) => { setSaved((l) => [c, ...l.filter((x) => x.id !== c.id)]); setSavedError("") })
       .catch((err) => storageFailed(err, "Couldn't save this chat"))
-  }, [busy, messages, provider, effort, storageFailed])
+  }, [busy, messages, provider, model, effort, storageFailed])
 
   const closeNavOnPhone = () => { if (!isWide()) setNavOpen(false) }
 
@@ -83,11 +85,12 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
       const c = await chats.get(id)
       setMessages(c.messages.map((m) => ({ ...m, id: nextId++ })))
       setChatId(c.id)
-      // Pick up where the chat left off, if that provider is still configured.
-      if (c.provider && providers.includes(c.provider)) {
-        setProvider(c.provider)
-        const ok = EFFORTS[c.provider]?.options.some((o) => o.value === c.effort)
-        setEffort(ok && c.effort ? c.effort : store.effort(c.provider))
+      // Pick up where the chat left off, if that model is still offered. Chats
+      // saved before the model picker only know their provider: use its default.
+      const m = findModel(models, c.provider, c.model) || (!c.model ? models.find((x) => x.provider === c.provider) : undefined)
+      if (m) {
+        setModel(m)
+        setEffort(c.effort && m.effort?.levels.includes(c.effort) ? c.effort : store.effort(m))
       }
       setSavedError("")
       inputRef.current?.focus()
@@ -137,15 +140,15 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
     t.style.height = Math.min(t.scrollHeight, 200) + "px"
   }, [input])
 
-  function pickProvider(p: string) {
-    setProvider(p)
-    store.setProvider(p)
-    setEffort(store.effort(p))
+  function pickModel(m: Model) {
+    setModel(m)
+    store.setModel(m)
+    setEffort(store.effort(m))
   }
 
   function pickEffort(v: string) {
     setEffort(v)
-    store.setEffort(provider, v)
+    if (model) store.setEffort(model, v)
   }
 
   function update(id: number, patch: Partial<Msg> | ((m: Msg) => Partial<Msg>)) {
@@ -157,7 +160,7 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
     const text = input.trim()
     const token = store.token()
     if (!text || !token || busy) return
-    if (!provider) {
+    if (!model) {
       setMessages((l) => [...l, { id: nextId++, role: "assistant", content: "No provider is configured on the server.", error: true }])
       return
     }
@@ -186,7 +189,7 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + token },
-        body: JSON.stringify({ provider, messages: turns, ...(effort && { effort }) }),
+        body: JSON.stringify({ provider, model: model.id, messages: turns, ...(effort && { effort }) }),
       })
       if (res.status === 401) return onLogout("Your token was rejected. Log in again.")
       const type = res.headers.get("content-type") || ""
@@ -194,8 +197,8 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
         let failed = ""
         await readStream(res, (ev) => {
           if (ev.type === "meta") {
-            meta = label(ev.provider) + " · " + ev.model
-            if (ev.effort) meta += " · " + effortLabel(ev.provider, ev.effort).toLowerCase() + " effort"
+            meta = label(ev.provider) + " · " + (findModel(models, ev.provider, ev.model)?.label || ev.model)
+            if (ev.effort) meta += " · " + effortLabel(ev.effort).toLowerCase() + " effort"
           }
           else if (ev.type === "delta") {
             got = true
@@ -274,11 +277,11 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
             >
               <PanelLeft />
             </button>
-            <span className="shrink-0 font-display text-[20px] leading-none sm:text-[22px]">
+            <span className="shrink-0 font-display text-[20px] leading-none max-[419px]:hidden sm:text-[22px]">
               LLM<span className="text-ember">ate</span>
             </span>
-            <ProviderSwitch providers={providers} value={provider} onChange={pickProvider} disabled={busy} />
-            <EffortPicker provider={provider} value={effort} onChange={pickEffort} disabled={busy} />
+            <ModelPicker models={models} value={model} onChange={pickModel} disabled={busy} />
+            <EffortPicker model={model} value={effort} onChange={pickEffort} disabled={busy} />
           </div>
           <div className="flex shrink-0 items-center sm:gap-1">
             <HeaderButton onClick={newChat} disabled={busy} label="New chat"><Plus /></HeaderButton>
@@ -290,12 +293,12 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
       <div ref={logRef} onClick={onLogClick} className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[760px] px-4 pt-8 pb-6 sm:px-5">
           {messages.length === 0 ? (
-            <EmptyState provider={provider} />
+            <EmptyState model={model} />
           ) : (
             <div className="grid gap-7">
               {messages.map((m) => (
                 <BlurFade key={m.id} direction="up" offset={8} duration={0.35} blur="4px">
-                  <Message m={m} provider={provider} />
+                  <Message m={m} name={model?.label || label(provider)} />
                 </BlurFade>
               ))}
             </div>
@@ -313,7 +316,7 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() }
             }}
-            placeholder={"Message " + label(provider)}
+            placeholder={"Message " + (model?.label || "the model")}
             title="Enter to send, Shift+Enter for a new line"
             className="max-h-[200px] min-h-6 flex-1 resize-none self-center bg-transparent py-1.5 leading-6 outline-none placeholder:text-muted/80"
           />
@@ -352,88 +355,67 @@ function HeaderButton({ children, label, ...props }: { children: React.ReactNode
   )
 }
 
-// Segmented control for the provider. You can switch at any point in a chat;
-// the whole conversation goes to whichever one is selected. Locked while a reply streams.
-function ProviderSwitch({ providers, value, onChange, disabled }: {
-  providers: string[]; value: string; onChange: (p: string) => void; disabled: boolean
+// The model for the next message, grouped by provider. You can switch at any
+// point in a chat; the whole conversation goes to whichever model is selected.
+// A native select keeps the long list easy to use on phones. Locked while a reply streams.
+function ModelPicker({ models, value, onChange, disabled }: {
+  models: Model[]; value?: Model; onChange: (m: Model) => void; disabled: boolean
 }) {
-  if (providers.length < 2) {
-    return providers[0] ? (
-      <span className="rounded-full border border-line px-3 py-1 font-mono text-[12px] text-muted">{label(providers[0])}</span>
+  if (models.length < 2) {
+    return value ? (
+      <span className="truncate rounded-full border border-line px-3 py-1 font-mono text-[12px] text-muted">{value.label}</span>
     ) : null
   }
-  // More than three won't fit a segmented control on a phone: use a menu.
-  if (providers.length > 3) {
-    return (
-      <label className={cn("relative inline-flex shrink-0 items-center", disabled && "opacity-60")}>
-        <span className="sr-only">Provider</span>
-        <select
-          value={value}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
-          title="Provider for the next message. You can switch at any time."
-          className={cn(
-            "appearance-none rounded-full border border-line bg-surface [color-scheme:light_dark] py-1 pr-7 pl-3 text-[13px] font-medium text-ink transition-colors hover:border-line-strong focus-visible:border-line-strong",
-            disabled ? "cursor-default" : "cursor-pointer",
-          )}
-        >
-          {providers.map((p) => (
-            <option key={p} value={p}>{label(p)}</option>
-          ))}
-        </select>
-        <ChevronDown width={14} height={14} className="pointer-events-none absolute right-2.5 text-muted" />
-      </label>
-    )
+  const groups: { provider: string; items: Model[] }[] = []
+  for (const m of models) {
+    if (groups.at(-1)?.provider !== m.provider) groups.push({ provider: m.provider, items: [] })
+    groups.at(-1)!.items.push(m)
   }
+  // The visible pill shows only the current model, so it stays as narrow as its
+  // name; the real (transparent) select sits on top and opens the native list.
   return (
-    <div
-      role="radiogroup"
-      aria-label="Provider"
-      title="Provider for the next message. You can switch at any time."
-      className={cn("flex rounded-full border border-line bg-surface p-0.5", disabled && "opacity-60")}
+    <label
+      className={cn(
+        "relative inline-flex min-w-0 items-center rounded-full border border-line bg-surface py-1 pr-7 pl-3 text-[13px] font-medium text-ink transition-colors focus-within:border-line-strong",
+        disabled ? "opacity-60" : "hover:border-line-strong",
+      )}
+      title={value ? label(value.provider) + " · " + value.label + ". You can switch at any time." : "Model"}
     >
-      {providers.map((p) => {
-        const on = p === value
-        return (
-          <button
-            key={p}
-            type="button"
-            role="radio"
-            aria-checked={on}
-            disabled={disabled}
-            onClick={() => onChange(p)}
-            className={cn(
-              "relative rounded-full px-2.5 py-1 text-[13px] sm:px-3 font-medium transition-colors",
-              on ? "text-paper" : "text-muted hover:text-ink",
-              disabled && "cursor-default",
-            )}
-          >
-            {on && (
-              <motion.span
-                layoutId="provider-pill"
-                className="absolute inset-0 rounded-full bg-ink"
-                transition={{ type: "spring", stiffness: 500, damping: 38 }}
-              />
-            )}
-            <span className="relative">{label(p)}</span>
-          </button>
-        )
-      })}
-    </div>
+      <span className="sr-only">Model</span>
+      <span aria-hidden className="truncate">{value?.label || "Pick a model"}</span>
+      <ChevronDown width={14} height={14} className="pointer-events-none absolute right-2.5 text-muted" />
+      <select
+        value={value ? modelKey(value) : ""}
+        disabled={disabled}
+        onChange={(e) => {
+          const m = models.find((x) => modelKey(x) === e.target.value)
+          if (m) onChange(m)
+        }}
+        className={cn("absolute inset-0 size-full appearance-none opacity-0 [color-scheme:light_dark]", disabled ? "cursor-default" : "cursor-pointer")}
+      >
+        {groups.map((g) => (
+          <optgroup key={g.provider} label={label(g.provider)}>
+            {g.items.map((m) => (
+              <option key={modelKey(m)} value={modelKey(m)}>{m.label}</option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+    </label>
   )
 }
 
-// Effort for the selected provider, with a short note on what each level does.
+// Effort for the selected model, if it takes one, with a short note on each level.
 // The menu is placed against the header row so it stays on screen on phones.
-function EffortPicker({ provider, value, onChange, disabled }: {
-  provider: string; value: string; onChange: (v: string) => void; disabled: boolean
+function EffortPicker({ model, value, onChange, disabled }: {
+  model?: Model; value: string; onChange: (v: string) => void; disabled: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [left, setLeft] = useState(0)
   const btnRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const id = useId()
-  const spec = EFFORTS[provider]
+  const options = effortOptions(model)
 
   useLayoutEffect(() => {
     if (!open || !btnRef.current || !menuRef.current) return
@@ -461,8 +443,8 @@ function EffortPicker({ provider, value, onChange, disabled }: {
 
   useEffect(() => { if (disabled) setOpen(false) }, [disabled])
 
-  if (!spec) return null
-  const current = spec.options.find((o) => o.value === value) || spec.options[0]
+  if (!model?.effort || options.length === 0) return null
+  const current = options.find((o) => o.value === value) || options[0]
 
   return (
     <>
@@ -491,7 +473,7 @@ function EffortPicker({ provider, value, onChange, disabled }: {
           ref={menuRef}
           id={id}
           role="radiogroup"
-          aria-label={label(provider) + " effort"}
+          aria-label={model.label + " effort"}
           initial={{ opacity: 0, y: -4 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.14 }}
@@ -499,9 +481,9 @@ function EffortPicker({ provider, value, onChange, disabled }: {
           className="absolute top-full mt-1.5 w-[min(320px,calc(100%-24px))] rounded-2xl border border-line bg-surface p-1.5 shadow-[0_16px_40px_-18px_rgb(28_26_23/0.45)]"
         >
           <p className="px-2.5 pt-1.5 pb-1 font-mono text-[11px] tracking-wide text-muted">
-            {provider === "gemini" ? "How long Gemini thinks before answering" : "How much " + label(provider) + " reasons before answering"}
+            {"How long " + model.label + " thinks before answering"}
           </p>
-          {spec.options.map((o) => {
+          {options.map((o) => {
             const on = o.value === current.value
             return (
               <button
@@ -521,7 +503,7 @@ function EffortPicker({ provider, value, onChange, disabled }: {
                 <span className="min-w-0">
                   <span className="block text-[14px] font-medium leading-5">
                     {o.label}
-                    {o.value === spec.default && <span className="ml-1.5 font-mono text-[10.5px] font-normal tracking-wide text-muted">default</span>}
+                    {o.value === model.effort?.default && <span className="ml-1.5 font-mono text-[10.5px] font-normal tracking-wide text-muted">default</span>}
                   </span>
                   <span className="block text-[13px] leading-[1.45] text-muted">{o.hint}</span>
                 </span>
@@ -534,20 +516,20 @@ function EffortPicker({ provider, value, onChange, disabled }: {
   )
 }
 
-function EmptyState({ provider }: { provider: string }) {
+function EmptyState({ model }: { model?: Model }) {
   return (
     <BlurFade direction="up" offset={10} duration={0.5} className="mt-[16vh] text-center">
       <h2 className="font-display text-[clamp(30px,6vw,44px)] leading-[1.1]">
         What's on <span className="text-ember">your</span> mind?
       </h2>
       <p className="mt-3 text-[15px] text-muted">
-        {provider ? <>Replies come from {label(provider)}. Switch providers any time, even mid-chat.</> : "No provider is configured on the server."}
+        {model ? <>Replies come from {model.label} on {label(model.provider)}. Switch models any time, even mid-chat.</> : "No provider is configured on the server."}
       </p>
     </BlurFade>
   )
 }
 
-function Message({ m, provider }: { m: Msg; provider: string }) {
+function Message({ m, name }: { m: Msg; name: string }) {
   const html = useMemo(
     () => (m.error || (m.pending && !m.content) ? "" : renderMarkdown(m.content, { streaming: m.pending })),
     [m.content, m.pending, m.error],
@@ -572,7 +554,7 @@ function Message({ m, provider }: { m: Msg; provider: string }) {
           <span className="relative inline-flex size-2 rounded-full bg-ember" />
         </span>
         <AnimatedShinyText className="mx-0 text-muted" shimmerWidth={60}>
-          {label(provider)} is thinking…
+          {name} is thinking…
         </AnimatedShinyText>
       </div>
     )

@@ -1,50 +1,37 @@
 export type Provider = string
 
-export const LABELS: Record<string, string> = {
-  gemini: "Gemini",
-  groq: "Groq",
-  openrouter: "OpenRouter",
-  cloudflare: "Cloudflare",
-  cohere: "Cohere",
-  nvidia: "NVIDIA",
-}
-
-// When each provider's daily free quota resets, where it is documented.
-const DAILY_RESET: Record<string, string> = {
-  gemini: "at midnight Pacific time",
-  cloudflare: "at midnight UTC",
-}
+export const LABELS: Record<string, string> = { gemini: "Gemini", groq: "Groq", cloudflare: "Cloudflare" }
 export const label = (p?: string) => (p && LABELS[p]) || p || "The model"
 
+// One entry of the server's model catalog (only providers with keys are sent).
+export type Model = {
+  provider: string
+  id: string
+  label: string
+  effort?: { levels: string[]; default: string }
+}
+export const modelKey = (m: { provider: string; id: string }) => m.provider + ":" + m.id
+export const findModel = (models: Model[], provider?: string | null, id?: string | null) =>
+  models.find((m) => m.provider === provider && m.id === id)
+
 const TOKEN_KEY = "llmate.token"
-const PROVIDER_KEY = "llmate.provider"
-const EFFORT_KEY = "llmate.effort." // + provider
+const MODEL_KEY = "llmate.model" // provider:model
+const EFFORT_KEY = "llmate.effort." // + provider:model
 
 export type EffortOption = { value: string; label: string; hint: string }
 
-// Effort levels per provider, matching EFFORTS in the function. Gemini 3.x
-// takes a thinking level; Groq's gpt-oss takes a reasoning effort.
-export const EFFORTS: Record<string, { default: string; options: EffortOption[] }> = {
-  gemini: {
-    default: "minimal",
-    options: [
-      { value: "minimal", label: "Minimal", hint: "Answers almost right away with little or no thinking. Fastest, and Gemini's default." },
-      { value: "low", label: "Low", hint: "A quick think first. Good for everyday questions." },
-      { value: "medium", label: "Medium", hint: "Works through the problem. Better for multi-step questions, a bit slower." },
-      { value: "high", label: "High", hint: "Thinks the longest. Best for tricky code, math or logic. Slowest." },
-    ],
-  },
-  groq: {
-    default: "medium",
-    options: [
-      { value: "low", label: "Low", hint: "Brief reasoning. Fastest replies, fine for simple questions." },
-      { value: "medium", label: "Medium", hint: "Balanced reasoning for most questions. The model's usual setting." },
-      { value: "high", label: "High", hint: "Long, careful reasoning for hard problems. Slower, and uses more of the daily token quota." },
-    ],
-  },
+// What each effort level means, shown in the effort menu. Gemini 3.x calls it
+// a thinking level; the others a reasoning effort. Same idea either way.
+const EFFORT_TEXT: Record<string, { label: string; hint: string }> = {
+  minimal: { label: "Minimal", hint: "Answers almost right away with little or no thinking. Fastest." },
+  low: { label: "Low", hint: "A quick think first. Good for everyday questions." },
+  medium: { label: "Medium", hint: "Works through the problem. Better for multi-step questions, a bit slower." },
+  high: { label: "High", hint: "Thinks the longest. Best for tricky code, math or logic. Slowest, and uses more of the free quota." },
+  xhigh: { label: "Max", hint: "Reasons at length before answering. Slowest, and uses the most of the daily allowance." },
 }
-export const effortLabel = (provider: string, value?: string) =>
-  EFFORTS[provider]?.options.find((o) => o.value === value)?.label || value || ""
+export const effortOptions = (m?: Model): EffortOption[] =>
+  (m?.effort?.levels || []).map((v) => ({ value: v, ...(EFFORT_TEXT[v] || { label: v, hint: "" }) }))
+export const effortLabel = (value?: string) => (value && EFFORT_TEXT[value]?.label) || value || ""
 
 const get = (k: string) => { try { return localStorage.getItem(k) } catch { return null } }
 const set = (k: string, v: string) => { try { localStorage.setItem(k, v) } catch { /* private mode */ } }
@@ -54,27 +41,27 @@ export const store = {
   token: () => get(TOKEN_KEY),
   setToken: (v: string) => set(TOKEN_KEY, v),
   clearToken: () => del(TOKEN_KEY),
-  provider: () => get(PROVIDER_KEY),
-  setProvider: (v: string) => set(PROVIDER_KEY, v),
-  // Remembered per provider, since each takes different levels.
-  effort: (p: string) => {
-    const e = EFFORTS[p]
-    if (!e) return ""
-    const saved = get(EFFORT_KEY + p)
-    return saved && e.options.some((o) => o.value === saved) ? saved : e.default
+  model: () => get(MODEL_KEY),
+  setModel: (m: Model) => set(MODEL_KEY, modelKey(m)),
+  // Remembered per model, since each takes different levels.
+  effort: (m?: Model) => {
+    const e = m?.effort
+    if (!m || !e) return ""
+    const saved = get(EFFORT_KEY + modelKey(m))
+    return saved && e.levels.includes(saved) ? saved : e.default
   },
-  setEffort: (p: string, v: string) => set(EFFORT_KEY + p, v),
+  setEffort: (m: Model, v: string) => set(EFFORT_KEY + modelKey(m), v),
 }
 
-export async function verify(token: string): Promise<{ status: number; providers: string[] }> {
+export async function verify(token: string): Promise<{ status: number; models: Model[] }> {
   const res = await fetch("/api/verify", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer " + token },
     body: "{}",
   })
-  let data: { providers?: string[] } = {}
+  let data: { models?: Model[] } = {}
   try { data = await res.json() } catch { /* empty body */ }
-  return { status: res.status, providers: data.providers || [] }
+  return { status: res.status, models: data.models || [] }
 }
 
 export type StreamEvent =
@@ -110,6 +97,12 @@ function waitText(sec?: number | null) {
   return "in about " + h + (h === 1 ? " hour" : " hours")
 }
 
+// When each provider's daily free quota resets, where it is documented.
+const DAILY_RESET: Record<string, string> = {
+  gemini: "at midnight Pacific time",
+  cloudflare: "at midnight UTC",
+}
+
 // A friendly note for quota limits instead of the raw provider error.
 export function quotaMessage(
   data: { provider?: string; quota?: { kind?: string; retryAfterSeconds?: number } },
@@ -117,11 +110,8 @@ export function quotaMessage(
 ) {
   const name = (data.provider && LABELS[data.provider]) || "This provider"
   const others = providers.filter((p) => p !== data.provider)
-  const alt = others.length ? " Meanwhile, you can switch to " + label(others[0]) + "." : ""
+  const alt = others.length ? " Meanwhile, you can pick a " + label(others[0]) + " model." : ""
   const q = data.quota || {}
-  if (q.kind === "monthly") {
-    return "📅 " + name + " has used up this month's free quota. It resets next month." + alt
-  }
   if (q.kind === "daily") {
     const when = waitText(q.retryAfterSeconds) || (data.provider && DAILY_RESET[data.provider]) || "soon"
     return "☕ " + name + " has used up today's free quota. Thanks for all the chatting! It resets " + when + "." + alt

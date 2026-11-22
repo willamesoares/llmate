@@ -6,6 +6,7 @@ export type ChatSummary = {
   id: string
   title: string
   provider: string | null
+  model?: string | null
   effort: string | null
   createdAt: string
   updatedAt: string
@@ -38,7 +39,7 @@ async function call<T>(action: string, body: object = {}): Promise<T> {
 export const chats = {
   list: () => call<{ chats: ChatSummary[] }>("list").then((d) => d.chats),
   get: (id: string) => call<{ chat: SavedChat }>("get", { id }).then((d) => d.chat),
-  save: (c: { id: string; provider: string; effort: string; messages: SavedMessage[] }) =>
+  save: (c: { id: string; provider: string; model: string; effort: string; messages: SavedMessage[] }) =>
     call<{ chat: ChatSummary }>("save", c).then((d) => d.chat),
   rename: (id: string, title: string) => call<{ chat: ChatSummary }>("rename", { id, title }).then((d) => d.chat),
   remove: (id: string) => call<{ ok: true }>("delete", { id }),

@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { handle, tokenMatches } from "../netlify/functions/api.mjs";
+import { handle, thinkStripper, tokenMatches } from "../netlify/functions/api.mjs";
 
 const TOKEN = "test-token-0123456789abcdef";
 const env = { ACCESS_TOKEN: TOKEN, GEMINI_API_KEY: "g", GROQ_API_KEY: "q" };
@@ -73,9 +73,18 @@ test("500 when ACCESS_TOKEN unset", async () => {
 test("verify succeeds and lists configured providers", async () => {
   const res = await handle(req("/api/verify"), env);
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: true, providers: ["gemini", "groq"] });
+  const data = await res.json();
+  assert.deepEqual(data.providers, ["gemini", "groq"]);
+  assert.deepEqual([...new Set(data.models.map((m) => m.provider))], ["gemini", "groq"]);
+  assert.deepEqual(data.models[0], {
+    provider: "gemini", id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite",
+    effort: { levels: ["minimal", "low", "medium", "high"], default: "minimal" },
+  });
+  assert.ok(data.models.some((m) => m.id === "qwen/qwen3.8-27b" && !m.effort && !("extra" in m)), "no effort, server-only fields hidden");
   const only = await handle(req("/api/verify"), { ...env, GEMINI_API_KEY: "" });
-  assert.deepEqual((await only.json()).providers, ["groq"]);
+  const o = await only.json();
+  assert.deepEqual(o.providers, ["groq"]);
+  assert.ok(o.models.every((m) => m.provider === "groq"));
 });
 
 const chat = (provider, messages = [{ role: "user", content: "x" }], extra = {}) =>
@@ -270,10 +279,11 @@ test("chats: save, list, get, rename, delete", async () => {
   const { call } = chatsApi();
   assert.deepEqual((await call("list", {})).body, { chats: [] });
 
-  const saved = await call("save", { id: "chat_0001", provider: "groq", effort: "high", messages: turns });
+  const saved = await call("save", { id: "chat_0001", provider: "groq", model: "openai/gpt-oss-20b", effort: "high", messages: turns });
   assert.equal(saved.status, 200);
   assert.equal(saved.body.chat.title, "How do I bake sourdough bread at home without a fancy ove…");
   assert.equal(saved.body.chat.provider, "groq");
+  assert.equal(saved.body.chat.model, "openai/gpt-oss-20b");
   assert.equal(saved.body.chat.effort, "high");
 
   await call("save", { id: "chat_0002", provider: "gemini", messages: [{ role: "user", content: "second" }] });
@@ -328,9 +338,13 @@ test("chats: unknown provider or effort is dropped, not stored", async () => {
   const c = (await call("save", { id: "chat_0001", provider: "evil", effort: "max", messages: turns })).body.chat;
   assert.equal(c.provider, null);
   assert.equal(c.effort, null);
-  const d = (await call("save", { id: "chat_0002", provider: "gemini", effort: "max", messages: turns })).body.chat;
+  const d = (await call("save", { id: "chat_0002", provider: "gemini", model: "gemini-3.5-flash-lite", effort: "max", messages: turns })).body.chat;
   assert.equal(d.provider, "gemini");
+  assert.equal(d.model, "gemini-3.5-flash-lite");
   assert.equal(d.effort, null);
+  const e = (await call("save", { id: "chat_0003", provider: "gemini", model: "openai/gpt-oss-20b", effort: "low", messages: turns })).body.chat;
+  assert.equal(e.model, null, "a model from another provider is dropped");
+  assert.equal(e.effort, null);
 });
 
 test("chats: list repairs an index that missed a save or a delete", async () => {
@@ -350,72 +364,87 @@ test("chats: storage failure is a 503, not a crash", async () => {
   assert.equal(res.status, 503);
 });
 
-// ---- Extra OpenAI-compatible providers ----
+// ---- Model picker and Cloudflare Workers AI ----
 
-const extraEnv = {
-  ACCESS_TOKEN: TOKEN,
-  OPENROUTER_API_KEY: "or",
-  CLOUDFLARE_ACCOUNT_ID: "acc123",
-  CLOUDFLARE_API_TOKEN: "cf",
-  COHERE_API_KEY: "co",
-  NVIDIA_API_KEY: "nv",
-};
+const cfEnv = { ACCESS_TOKEN: TOKEN, CLOUDFLARE_ACCOUNT_ID: "acc123", CLOUDFLARE_API_TOKEN: "cf" };
 
-test("verify lists every configured provider in order; Cloudflare needs both vars", async () => {
-  const all = await (await handle(req("/api/verify"), { ...env, ...extraEnv })).json();
-  assert.deepEqual(all.providers, ["gemini", "groq", "openrouter", "cloudflare", "cohere", "nvidia"]);
-  const noAccount = await (await handle(req("/api/verify"), { ...extraEnv, CLOUDFLARE_ACCOUNT_ID: "" })).json();
-  assert.deepEqual(noAccount.providers, ["openrouter", "cohere", "nvidia"]);
-  const res = await handle(chat("cloudflare"), { ...extraEnv, CLOUDFLARE_API_TOKEN: "" });
+test("verify lists Cloudflare only when both of its vars are set", async () => {
+  const all = await (await handle(req("/api/verify"), { ...env, ...cfEnv })).json();
+  assert.deepEqual(all.providers, ["gemini", "groq", "cloudflare"]);
+  const noAccount = await (await handle(req("/api/verify"), { ...env, ...cfEnv, CLOUDFLARE_ACCOUNT_ID: "" })).json();
+  assert.deepEqual(noAccount.providers, ["gemini", "groq"]);
+  const res = await handle(chat("cloudflare"), { ...cfEnv, CLOUDFLARE_API_TOKEN: "" });
   assert.equal(res.status, 400);
 });
 
-for (const [name, url, key, model] of [
-  ["openrouter", "https://openrouter.ai/api/v1/chat/completions", "or", "openrouter/free"],
-  ["cloudflare", "https://api.cloudflare.com/client/v4/accounts/acc123/ai/v1/chat/completions", "cf", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"],
-  ["cohere", "https://api.cohere.ai/compatibility/v1/chat/completions", "co", "command-a-plus-05-2026"],
-  ["nvidia", "https://integrate.api.nvidia.com/v1/chat/completions", "nv", "meta/llama-3.3-70b-instruct"],
-]) {
-  test(`${name}: streams from its endpoint with its key and default model`, async () => {
-    mockFetch(() => sse([grq("hello "), grq(name)], { tail: "data: [DONE]\n\n" }));
-    const evs = await events(await handle(chat(name), { ...extraEnv, SYSTEM_PROMPT: "be nice" }));
-    assert.deepEqual(evs[0], { type: "meta", provider: name, model });
-    assert.equal(textOf(evs), "hello " + name);
-    assert.deepEqual(evs.at(-1), { type: "done" });
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, url);
-    assert.equal(calls[0].opts.headers.authorization, "Bearer " + key);
-    const sent = JSON.parse(calls[0].opts.body);
-    assert.equal(sent.model, model);
-    assert.equal(sent.stream, true);
-    assert.deepEqual(sent.messages[0], { role: "system", content: "be nice" });
-  });
-}
-
-test("a model override env var is used", async () => {
-  mockFetch(() => sse([grq("ok")]));
-  const evs = await events(await handle(chat("openrouter"), { ...extraEnv, OPENROUTER_MODEL: "some/model:free" }));
-  assert.equal(evs[0].model, "some/model:free");
-  assert.equal(JSON.parse(calls[0].opts.body).model, "some/model:free");
+test("cloudflare: streams the picked model from the account's endpoint", async () => {
+  mockFetch(() => sse([grq("hello "), grq("there")], { tail: "data: [DONE]\n\n" }));
+  const res = await handle(chat("cloudflare", undefined, { model: "@cf/google/gemma-4-26b-a4b-it" }), { ...cfEnv, SYSTEM_PROMPT: "be nice" });
+  const evs = await events(res);
+  assert.deepEqual(evs[0], { type: "meta", provider: "cloudflare", model: "@cf/google/gemma-4-26b-a4b-it" });
+  assert.equal(textOf(evs), "hello there");
+  assert.equal(calls[0].url, "https://api.cloudflare.com/client/v4/accounts/acc123/ai/v1/chat/completions");
+  assert.equal(calls[0].opts.headers.authorization, "Bearer cf");
+  const sent = JSON.parse(calls[0].opts.body);
+  assert.equal(sent.model, "@cf/google/gemma-4-26b-a4b-it");
+  assert.deepEqual(sent.messages[0], { role: "system", content: "be nice" });
 });
 
-test("providers without effort levels refuse an effort", async () => {
+test("the picked model is sent; no model means the provider's default", async () => {
+  mockFetch(() => geminiOk());
+  await events(await handle(chat("gemini", undefined, { model: "gemini-3-flash-preview", effort: "low" }), env));
+  assert.match(calls[0].url, /models\/gemini-3-flash-preview:streamGenerateContent/);
+  mockFetch(() => groqOk());
+  const evs = await events(await handle(chat("groq"), env));
+  assert.equal(evs[0].model, "openai/gpt-oss-120b");
+});
+
+test("400 on a model the provider doesn't offer", async () => {
   mockFetch(() => { throw new Error("should not be called"); });
-  const res = await handle(chat("cohere", undefined, { effort: "high" }), extraEnv);
-  assert.equal(res.status, 400);
-  assert.match((await res.json()).error, /does not take an effort/);
+  for (const [p, model] of [["groq", "gemini-3.5-flash"], ["gemini", "nope"], ["gemini", 7], ["groq", "toString"]]) {
+    const res = await handle(chat(p, undefined, { model }), env);
+    assert.equal(res.status, 400, p + " " + model);
+  }
   assert.equal(calls.length, 0);
 });
 
-test("OpenRouter, Cloudflare and Cohere quota errors are classified", async () => {
-  mockFetch(() => new Response(JSON.stringify({ error: { message: "Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day", code: 429 } }), { status: 429 }));
-  assert.equal((await (await handle(chat("openrouter"), extraEnv)).json()).quota.kind, "daily");
+test("effort follows the model: refused where it has none, per-model levels", async () => {
+  mockFetch(() => { throw new Error("should not be called"); });
+  const res = await handle(chat("gemini", undefined, { model: "gemini-3.5-flash", effort: "high" }), env);
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /does not take an effort/);
+  const q = await handle(chat("cloudflare", undefined, { model: "@cf/qwen/qwen3.8-27b", effort: "high" }), cfEnv);
+  assert.equal(q.status, 400, "Cloudflare Qwen takes low/medium/xhigh");
+  assert.equal(calls.length, 0);
+  mockFetch(() => sse([grq("ok")]));
+  await events(await handle(chat("cloudflare", undefined, { model: "@cf/qwen/qwen3.8-27b", effort: "xhigh" }), cfEnv));
+  assert.equal(JSON.parse(calls[0].opts.body).reasoning_effort, "xhigh");
+});
+
+test("groq qwen asks for hidden reasoning", async () => {
+  mockFetch(() => groqOk());
+  await events(await handle(chat("groq", undefined, { model: "qwen/qwen3.8-27b" }), env));
+  const sent = JSON.parse(calls[0].opts.body);
+  assert.equal(sent.reasoning_format, "hidden");
+  assert.equal("reasoning_effort" in sent, false);
+});
+
+test("a leading <think> block is dropped, even split across chunks", async () => {
+  mockFetch(() => sse([grq("\n<thi"), grq("nk>let me see"), grq("... ok</th"), grq("ink>\n\nThe answer"), grq(" is 4. <think> stays")]));
+  const evs = await events(await handle(chat("cloudflare", undefined, { model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b" }), cfEnv));
+  assert.equal(textOf(evs), "The answer is 4. <think> stays");
+});
+
+test("thinkStripper leaves ordinary replies alone", () => {
+  const s = thinkStripper();
+  assert.equal(["  ", "<", "b>bold</b>"].map(s).join(""), "  <b>bold</b>");
+  const t = thinkStripper();
+  assert.equal(["Hello", " world"].map(t).join(""), "Hello world");
+});
+
+test("Cloudflare daily allocation errors are classified", async () => {
   mockFetch(() => new Response(JSON.stringify({ errors: [{ code: 4006, message: "you have used up your daily free allocation of 10,000 neurons" }], success: false }), { status: 429 }));
-  const cf = await (await handle(chat("cloudflare"), extraEnv)).json();
+  const cf = await (await handle(chat("cloudflare"), cfEnv)).json();
   assert.equal(cf.quota.kind, "daily");
   assert.match(cf.error, /^Cloudflare HTTP 429: you have used up your daily free allocation/);
-  mockFetch(() => new Response(JSON.stringify({ message: "You are using a Trial key, which is limited to 1000 API calls / month." }), { status: 429 }));
-  const co = await (await handle(chat("cohere"), extraEnv)).json();
-  assert.equal(co.quota.kind, "monthly");
-  assert.match(co.error, /^Cohere HTTP 429: You are using a Trial key/);
 });
