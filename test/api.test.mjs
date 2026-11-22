@@ -355,7 +355,6 @@ test("chats: storage failure is a 503, not a crash", async () => {
 const extraEnv = {
   ACCESS_TOKEN: TOKEN,
   OPENROUTER_API_KEY: "or",
-  MISTRAL_API_KEY: "mi",
   CLOUDFLARE_ACCOUNT_ID: "acc123",
   CLOUDFLARE_API_TOKEN: "cf",
   COHERE_API_KEY: "co",
@@ -364,16 +363,15 @@ const extraEnv = {
 
 test("verify lists every configured provider in order; Cloudflare needs both vars", async () => {
   const all = await (await handle(req("/api/verify"), { ...env, ...extraEnv })).json();
-  assert.deepEqual(all.providers, ["gemini", "groq", "openrouter", "mistral", "cloudflare", "cohere", "nvidia"]);
+  assert.deepEqual(all.providers, ["gemini", "groq", "openrouter", "cloudflare", "cohere", "nvidia"]);
   const noAccount = await (await handle(req("/api/verify"), { ...extraEnv, CLOUDFLARE_ACCOUNT_ID: "" })).json();
-  assert.deepEqual(noAccount.providers, ["openrouter", "mistral", "cohere", "nvidia"]);
+  assert.deepEqual(noAccount.providers, ["openrouter", "cohere", "nvidia"]);
   const res = await handle(chat("cloudflare"), { ...extraEnv, CLOUDFLARE_API_TOKEN: "" });
   assert.equal(res.status, 400);
 });
 
 for (const [name, url, key, model] of [
   ["openrouter", "https://openrouter.ai/api/v1/chat/completions", "or", "openrouter/free"],
-  ["mistral", "https://api.mistral.ai/v1/chat/completions", "mi", "mistral-small-latest"],
   ["cloudflare", "https://api.cloudflare.com/client/v4/accounts/acc123/ai/v1/chat/completions", "cf", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"],
   ["cohere", "https://api.cohere.ai/compatibility/v1/chat/completions", "co", "command-a-plus-05-2026"],
   ["nvidia", "https://integrate.api.nvidia.com/v1/chat/completions", "nv", "meta/llama-3.3-70b-instruct"],
@@ -403,7 +401,7 @@ test("a model override env var is used", async () => {
 
 test("providers without effort levels refuse an effort", async () => {
   mockFetch(() => { throw new Error("should not be called"); });
-  const res = await handle(chat("mistral", undefined, { effort: "high" }), extraEnv);
+  const res = await handle(chat("cohere", undefined, { effort: "high" }), extraEnv);
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /does not take an effort/);
   assert.equal(calls.length, 0);

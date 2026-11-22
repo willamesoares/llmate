@@ -3,7 +3,7 @@
 A private LLM chat hosted on Netlify. Only someone holding the access token can use it.
 
 - **Frontend:** a small React app (`src/`, built with Vite and Tailwind CSS) with a token-only login screen and a chat view. A few [Magic UI](https://magicui.design) components (in `src/components/ui/`) add restrained motion: the dot grid and spotlight card on the login screen, messages fading in, a shimmer on the "thinking" note, and a light beam around the message box while a reply streams. Fonts and libraries are bundled and self-hosted; the page loads nothing from other sites.
-- **Backend:** one Netlify Function (`netlify/functions/api.mjs`) serving `/api/verify` and `/api/chat`. It checks the token with a constant-time compare, then calls the provider you picked for that chat: **Google Gemini** (free tier, Flash-Lite model), **Groq**, **OpenRouter** (free models), **Mistral**, **Cloudflare Workers AI**, **Cohere** or **NVIDIA**, each on its free tier. Every provider is optional and shows up only when its key is set. There is no automatic fallback.
+- **Backend:** one Netlify Function (`netlify/functions/api.mjs`) serving `/api/verify` and `/api/chat`. It checks the token with a constant-time compare, then calls the provider you picked for that chat: **Google Gemini** (free tier, Flash-Lite model), **Groq**, **OpenRouter** (free models), **Cloudflare Workers AI**, **Cohere** or **NVIDIA**, each on its free tier. Every provider is optional and shows up only when its key is set. There is no automatic fallback.
 - **Secrets** (the token and the API keys) live only in Netlify environment variables. The browser never sees the provider keys.
 
 Everything here runs on free tiers: Netlify Starter plus the free tier of each provider you turn on. None of them needs a credit card.
@@ -28,11 +28,6 @@ Everything here runs on free tiers: Netlify Starter plus the free tier of each p
 2. Click **Create API Key** and copy it. This is `OPENROUTER_API_KEY`.
 3. The default model is `openrouter/free`, which picks one of OpenRouter's free models for each request, so the model can change from reply to reply (each reply shows which one answered). Free models allow 20 requests a minute and [50 a day](https://openrouter.ai/docs/api/reference/limits), or 1,000 a day once you have bought at least 10 credits. To pin one model, set `OPENROUTER_MODEL` to any id ending in `:free`.
 
-**Mistral** (optional)
-1. Sign up at [Mistral AI Studio](https://console.mistral.ai) and pick the free **Experiment** plan. It needs a verified phone number but no card.
-2. Under **API Keys**, create a key. This is `MISTRAL_API_KEY`.
-3. The default model is `mistral-small-latest`. Rate limits are low and shown on the Limits page of the console.
-
 **Cloudflare Workers AI** (optional, needs two values)
 1. Sign up for a free [Cloudflare](https://dash.cloudflare.com) account. The Workers Free plan includes [10,000 Neurons a day](https://developers.cloudflare.com/workers-ai/platform/pricing/), reset at midnight UTC. A Neuron is Cloudflare's usage unit; bigger models use more per reply.
 2. Copy your **Account ID** (on the account home page, or under **Workers & Pages**). This is `CLOUDFLARE_ACCOUNT_ID`.
@@ -49,7 +44,7 @@ Everything here runs on free tiers: Netlify Starter plus the free tier of each p
 2. Open any model page, click **Get API Key**, and copy it (it starts with `nvapi-`). This is `NVIDIA_API_KEY`.
 3. The default model is `meta/llama-3.3-70b-instruct`. NVIDIA offers free inference for prototyping; its exact limits aren't published in the docs, so treat it as a backup.
 
-Not included, as of November 2026: **GitHub Models** was retired on July 30, 2026. **Cerebras** now offers only a 30-day trial credit that needs a payment method. **Hugging Face** Inference Providers gives free accounts no monthly credit.
+Not included, as of November 2026: **GitHub Models** was retired on July 30, 2026. **Cerebras** now offers only a 30-day trial credit that needs a payment method. **Hugging Face** Inference Providers gives free accounts no monthly credit. **Mistral**'s API needs a paid plan.
 
 You need at least one provider. The provider picker only lists providers whose key (both values, for Cloudflare) is set.
 
@@ -77,14 +72,12 @@ Keep it in your password manager. The server refuses tokens shorter than 16 char
 | `GEMINI_API_KEY` | at least one provider | key from Google AI Studio |
 | `GROQ_API_KEY` | at least one provider | key from the Groq console |
 | `OPENROUTER_API_KEY` | at least one provider | key from OpenRouter |
-| `MISTRAL_API_KEY` | at least one provider | key from Mistral AI Studio |
 | `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` | at least one provider | account ID and Workers AI token from Cloudflare |
 | `COHERE_API_KEY` | at least one provider | trial key from the Cohere dashboard |
 | `NVIDIA_API_KEY` | at least one provider | key from build.nvidia.com |
 | `GEMINI_MODEL` | no | defaults to `gemini-3.5-flash-lite` |
 | `GROQ_MODEL` | no | defaults to `openai/gpt-oss-120b` |
 | `OPENROUTER_MODEL` | no | defaults to `openrouter/free` |
-| `MISTRAL_MODEL` | no | defaults to `mistral-small-latest` |
 | `CLOUDFLARE_MODEL` | no | defaults to `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
 | `COHERE_MODEL` | no | defaults to `command-a-plus-05-2026` |
 | `NVIDIA_MODEL` | no | defaults to `meta/llama-3.3-70b-instruct` |
@@ -94,7 +87,7 @@ Keep it in your password manager. The server refuses tokens shorter than 16 char
 4. **Deploys → Trigger deploy → Deploy site** so the function picks up the variables. Any later change to a variable also needs a redeploy.
 5. Open the site, paste your token, and chat.
 
-If a default model is retired, the chat shows the provider's error. Set that provider's `*_MODEL` variable to a current model from its list ([Gemini](https://ai.google.dev/gemini-api/docs/models), [Groq](https://console.groq.com/docs/models), [OpenRouter free models](https://openrouter.ai/models?max_price=0), [Mistral](https://docs.mistral.ai/getting-started/models/), [Cloudflare](https://developers.cloudflare.com/workers-ai/models/), [Cohere](https://docs.cohere.com/docs/models), [NVIDIA](https://build.nvidia.com/models)) and redeploy.
+If a default model is retired, the chat shows the provider's error. Set that provider's `*_MODEL` variable to a current model from its list ([Gemini](https://ai.google.dev/gemini-api/docs/models), [Groq](https://console.groq.com/docs/models), [OpenRouter free models](https://openrouter.ai/models?max_price=0), [Cloudflare](https://developers.cloudflare.com/workers-ai/models/), [Cohere](https://docs.cohere.com/docs/models), [NVIDIA](https://build.nvidia.com/models)) and redeploy.
 
 ### Rotating the token
 
@@ -122,7 +115,7 @@ flowchart TB
     subgraph Providers["LLM providers (free tiers)"]
         GEM["Google Gemini<br/>gemini-3.5-flash-lite"]
         GROQ["Groq<br/>openai/gpt-oss-120b"]
-        MORE["Optional: OpenRouter, Mistral,<br/>Cloudflare, Cohere, NVIDIA"]
+        MORE["Optional: OpenRouter,<br/>Cloudflare, Cohere, NVIDIA"]
     end
 
     STATIC -- "serves the page" --> UI
@@ -190,7 +183,6 @@ Of the pieces in the diagrams, four handle what you type. **Your browser** shows
 - **Google Gemini (free tier):** under the [Gemini API terms](https://ai.google.dev/gemini-api/terms), Google uses free-tier prompts and responses "to provide, improve, and develop Google products and services and machine learning technologies," and "human reviewers may read, annotate, and process" them. Google says it disconnects them from your account and API key first. The terms explicitly say not to submit sensitive, confidential, or personal information. Turning on billing for the key moves it to Google's paid terms, where prompts aren't used to improve products and are logged only for a limited time for abuse monitoring.
 - **Groq:** under the [GroqCloud services agreement](https://console.groq.com/docs/legal/services-agreement) (section 4.2), Groq may not use your inputs or outputs to train models unless you allow it. [By default it doesn't retain them](https://console.groq.com/docs/your-data). It may keep logs for up to 30 days when troubleshooting or investigating suspected abuse, and you can opt out with **Zero Data Retention** under Data Controls in the Groq console.
 
-- **Mistral (free Experiment plan):** Mistral says [requests on the Experiment plan may be used to train its models](https://help.mistral.ai/en/articles/450104-how-can-i-try-the-api-for-free-with-the-experiment-plan). Treat it like free-tier Gemini.
 - **OpenRouter, Cloudflare, Cohere and NVIDIA:** their data terms weren't reviewed for this README. OpenRouter passes free-model requests on to whichever provider hosts that model, and some free hosts log prompts, so assume free models may keep what you send. Check each provider's privacy settings and terms before sending anything sensitive.
 
 **In short,** pick Groq for anything you'd rather not have read or reused, and assume Google may read and reuse anything you send to free-tier Gemini. Only you hold the access token, so nobody else can use the chat or read it through this site. These summaries reflect the providers' terms as of November 2026, so check the links for changes.
@@ -223,7 +215,7 @@ You can run the whole app (frontend and function) on your own computer with your
 ### What you need
 
 - [Node.js](https://nodejs.org) 20.19 or newer (22 matches what Netlify uses) and npm.
-- At least one free API key (Gemini, Groq, OpenRouter, Mistral, Cloudflare, Cohere or NVIDIA). See [Get the free API keys](#1-get-the-free-api-keys) above. These are your own keys, so free-tier usage counts against your own quota.
+- At least one free API key (Gemini, Groq, OpenRouter, Cloudflare, Cohere or NVIDIA). See [Get the free API keys](#1-get-the-free-api-keys) above. These are your own keys, so free-tier usage counts against your own quota.
 
 ### Steps
 
@@ -256,7 +248,7 @@ You can run the whole app (frontend and function) on your own computer with your
    ACCESS_TOKEN=paste-the-token-from-npm-run-token
    GEMINI_API_KEY=your-gemini-key     # leave empty to skip Gemini
    GROQ_API_KEY=your-groq-key         # leave empty to skip Groq
-   # ...and any of OPENROUTER_API_KEY, MISTRAL_API_KEY, CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN,
+   # ...and any of OPENROUTER_API_KEY, CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN,
    # COHERE_API_KEY, NVIDIA_API_KEY
    ```
 

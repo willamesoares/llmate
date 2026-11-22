@@ -80,7 +80,7 @@ async function upstreamError(name, res) {
     body = await res.text();
     try {
       const j = JSON.parse(body);
-      // OpenAI style {error:{message}}, Mistral/Cohere {message}, Cloudflare {errors:[{message}]}.
+      // OpenAI style {error:{message}}, Cohere {message}, Cloudflare {errors:[{message}]}.
       detail = (typeof j?.error === "string" ? j.error : j?.error?.message) || j?.message || j?.errors?.[0]?.message || j?.detail || body;
     } catch {
       detail = body;
@@ -154,7 +154,7 @@ async function openGemini(messages, system, env, timer, effort) {
   return { model, pieces: pieces() };
 }
 
-// Groq, OpenRouter, Mistral, Cloudflare Workers AI, Cohere and NVIDIA all
+// Groq, OpenRouter, Cloudflare Workers AI, Cohere and NVIDIA all
 // speak the OpenAI chat-completions streaming format, so one opener serves them.
 function openAICompatible(label, url, keyVar, modelVar, defaultModel, { effortParam } = {}) {
   return async function open(messages, system, env, timer, effort) {
@@ -192,9 +192,6 @@ const openGroq = openAICompatible(
 const openOpenRouter = openAICompatible(
   "OpenRouter", "https://openrouter.ai/api/v1/chat/completions", "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "openrouter/free",
 );
-const openMistral = openAICompatible(
-  "Mistral", "https://api.mistral.ai/v1/chat/completions", "MISTRAL_API_KEY", "MISTRAL_MODEL", "mistral-small-latest",
-);
 const openCloudflare = openAICompatible(
   "Cloudflare",
   (env) => `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID)}/ai/v1/chat/completions`,
@@ -220,7 +217,6 @@ const PROVIDERS = {
   gemini: { keys: ["GEMINI_API_KEY"], open: openGemini },
   groq: { keys: ["GROQ_API_KEY"], open: openGroq },
   openrouter: { keys: ["OPENROUTER_API_KEY"], open: openOpenRouter },
-  mistral: { keys: ["MISTRAL_API_KEY"], open: openMistral },
   cloudflare: { keys: ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"], open: openCloudflare },
   cohere: { keys: ["COHERE_API_KEY"], open: openCohere },
   nvidia: { keys: ["NVIDIA_API_KEY"], open: openNvidia },

@@ -4,7 +4,6 @@ export const LABELS: Record<string, string> = {
   gemini: "Gemini",
   groq: "Groq",
   openrouter: "OpenRouter",
-  mistral: "Mistral",
   cloudflare: "Cloudflare",
   cohere: "Cohere",
   nvidia: "NVIDIA",
