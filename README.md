@@ -62,6 +62,8 @@ If a default model is retired, set `GEMINI_MODEL` or `GROQ_MODEL` to a current o
 
 Change `ACCESS_TOKEN` in Netlify and redeploy. Any browser holding the old token is logged out on its next request.
 
+**Rotating the token hides your saved chats.** Chats are filed under a hash of the token, so a new token starts with an empty list. The old chats are not deleted, just unreachable. To get them back, set `ACCESS_TOKEN` to the old value again. To clear them for good, delete the `chats` store under **Blobs** in the Netlify dashboard (or delete each chat in the sidebar before rotating).
+
 ## How it works
 
 ### The pieces
@@ -143,7 +145,7 @@ sequenceDiagram
 
 ### Who can see your chats
 
-Of the pieces in the diagrams, four handle what you type. **Your browser** holds the conversation only in the open tab. It is not saved, and a reload or **New chat** clears it. `localStorage` keeps only your access token and the last provider you picked. **Netlify** runs the function, so each message passes through Netlify's servers (encrypted in transit with HTTPS). The function doesn't store chats or log prompts or replies. It logs only an error reason when a provider call fails, and Netlify keeps function logs for up to 7 days, depending on your plan ([Netlify logs](https://docs.netlify.com/manage/monitoring/logs/)). **The provider you pick** receives the whole conversation so far with every message, and this is where your data can be reused:
+Of the pieces in the diagrams, four handle what you type. **Your browser** shows the open chat. `localStorage` keeps only your access token and your last provider and effort picks. **Netlify** runs the function, so each message passes through Netlify's servers (encrypted in transit with HTTPS), and it **stores your saved chats** in [Netlify Blobs](https://docs.netlify.com/build/data-and-storage/netlify-blobs/), the site's built-in key-value store. They sit in your Netlify account, readable by anyone with access to that account or site, and are not end-to-end encrypted. Delete a chat in the sidebar and it is removed from the store. The function doesn't log prompts or replies. It logs only an error reason when a provider call fails, and Netlify keeps function logs for up to 7 days, depending on your plan ([Netlify logs](https://docs.netlify.com/manage/monitoring/logs/)). **The provider you pick** receives the whole conversation so far with every message, and this is where your data can be reused:
 
 - **Google Gemini (free tier):** under the [Gemini API terms](https://ai.google.dev/gemini-api/terms), Google uses free-tier prompts and responses "to provide, improve, and develop Google products and services and machine learning technologies," and "human reviewers may read, annotate, and process" them. Google says it disconnects them from your account and API key first. The terms explicitly say not to submit sensitive, confidential, or personal information. Turning on billing for the key moves it to Google's paid terms, where prompts aren't used to improve products and are logged only for a limited time for abuse monitoring.
 - **Groq:** under the [GroqCloud services agreement](https://console.groq.com/docs/legal/services-agreement) (section 4.2), Groq may not use your inputs or outputs to train models unless you allow it. [By default it doesn't retain them](https://console.groq.com/docs/your-data). It may keep logs for up to 30 days when troubleshooting or investigating suspected abuse, and you can opt out with **Zero Data Retention** under Data Controls in the Groq console.
@@ -156,7 +158,8 @@ Of the pieces in the diagrams, four handle what you type. **Your browser** holds
 - Pick **Gemini** or **Groq** in the dropdown next to the title. You can switch at any point in a chat (except while a reply is streaming). The next message sends the whole conversation so far to the provider you picked, and each reply is labeled with the provider and model that wrote it. The last choice is remembered on the device.
 - Next to the provider is an **Effort** picker, with a one-line note on each level. Gemini takes a thinking level: Minimal (its default, as close to off as Gemini 3 Flash-Lite allows), Low, Medium or High. Groq's gpt-oss takes a reasoning effort: Low, Medium (default) or High. Higher effort is slower and spends more of the free quota. The choice is remembered per provider, sent as `effort` to `/api/chat`, and shown under each reply. The model's thinking itself isn't shown; it only keeps the stream alive so long thinks don't hit the 20-second idle timeout. If you point `GEMINI_MODEL` at a model that doesn't accept a level, the provider's error is shown in the chat.
 - Each message sends the conversation so far to `POST /api/chat` with `Authorization: Bearer <token>`. The function rejects anything without a valid token with `401` before touching any provider.
-- The chat history lives only in the open tab. **New chat** or a reload clears it. Nothing is stored server-side.
+- **Saved chats.** Each chat is saved after every reply (or error) to Netlify Blobs, with its messages, the provider and effort it last used, and a title taken from its first message. The sidebar (the panel icon at the top left; it slides over the chat on phones) lists them newest first, grouped by day, and you can reopen, rename or delete each one. Reopening a chat also switches back to its provider and effort. Because the chats live on the server, they show up on every device where you log in with the same token.
+- Chats are filed in a store named `chats` under `<hash of the token>/<chat id>`, plus a `<hash>/_index` entry with the titles the sidebar lists. Every `/api/chats/*` request (`list`, `get`, `save`, `rename`, `delete`) goes through the same token check as `/api/chat`, and the hash comes from the token on the request, so there is no way to ask for another token's chats. Blobs is free and needs no setup on Netlify: the function just uses it. The store uses strong consistency, so a chat saved on your phone lists right away on your laptop. If two devices save at the same moment, the list repairs itself the next time it loads.
 - Replies stream in as the model writes them, with a "thinking" note until the first words arrive. The function relays the provider's stream to the browser as newline-delimited JSON. Each finished reply shows which provider and model answered.
 - Messages (yours and the model's) are rendered as Markdown with [marked](https://marked.js.org), sanitized with [DOMPurify](https://github.com/cure53/DOMPurify) (no raw HTML, images, scripts or event handlers), and code blocks get [highlight.js](https://highlightjs.org) colors and a Copy button. The libraries are bundled into the app by Vite, so the strict Content-Security-Policy (`script-src 'self'`, no inline scripts) still holds. The site also sends `noindex` headers.
 - While a reply streams, the page doesn't scroll on its own. It jumps to the bottom only when you send a message.
@@ -165,7 +168,8 @@ Of the pieces in the diagrams, four handle what you type. **Your browser** holds
 
 - Free tiers have per-minute and per-day request caps. When a provider's daily quota (or a short per-minute limit) is hit, the chat shows a friendly note saying when it resets and suggests the other provider.
 - Netlify caps how long a synchronous function may run (check [Netlify's function limits](https://docs.netlify.com/functions/overview/#default-deployment-options) for your plan). The function gives up if the provider sends nothing for 20 seconds. If Netlify's cap cuts a long streamed answer short, the text so far stays in the chat, marked as stopped early.
-- History is capped at the last 40 messages and about 32,000 characters.
+- History is capped at the last 40 messages and about 32,000 characters. That is what goes to the provider; a saved chat keeps everything, up to 1,000 messages and 2 million characters.
+- Netlify Blobs is included on the free plan. Text chats are tiny, so storage is not a practical concern for one person's use (see [Netlify's pricing](https://www.netlify.com/pricing/) for current limits).
 
 ## Run it locally
 
@@ -226,7 +230,7 @@ You can run the whole app (frontend and function) on your own computer with your
    netlify dev
    ```
 
-   The first run can take a minute while the CLI downloads its helpers. When it prints `Local dev server ready: http://localhost:8888`, open that address (not Vite's own port 5173, which has no `/api`), paste the `ACCESS_TOKEN` from your `.env`, and chat. Edits under `src/` reload in the browser. After you change `.env` or the function, stop `netlify dev` with Ctrl+C and start it again.
+   The first run can take a minute while the CLI downloads its helpers. When it prints `Local dev server ready: http://localhost:8888`, open that address (not Vite's own port 5173, which has no `/api`), paste the `ACCESS_TOKEN` from your `.env`, and chat. `netlify dev` runs a local stand-in for Netlify Blobs, so saved chats work too; they're kept in a `.netlify/` folder in the project and are separate from the chats on your deployed site. Edits under `src/` reload in the browser. After you change `.env` or the function, stop `netlify dev` with Ctrl+C and start it again.
 
 ### If something goes wrong
 

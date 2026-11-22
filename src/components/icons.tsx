@@ -29,3 +29,15 @@ export const ChevronDown = (p: SVGProps<SVGSVGElement>) => (
 export const Check = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base} {...p}><path d="M20 6 9 17l-5-5" /></svg>
 )
+export const PanelLeft = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}><rect x="3" y="4" width="18" height="16" rx="2.5" /><path d="M9.5 4v16" /></svg>
+)
+export const Pencil = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" /></svg>
+)
+export const Trash = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}><path d="M4 7h16" /><path d="M10 11v6M14 11v6" /><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" /><path d="M9 7V4h6v3" /></svg>
+)
+export const X = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base} {...p}><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+)

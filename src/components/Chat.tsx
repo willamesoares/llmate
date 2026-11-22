@@ -1,10 +1,12 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react"
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react"
 import { motion } from "motion/react"
 import { AnimatedShinyText } from "@/components/ui/animated-shiny-text"
 import { BlurFade } from "@/components/ui/blur-fade"
 import { BorderBeam } from "@/components/ui/border-beam"
-import { ArrowUp, Check, ChevronDown, Gauge, LogOut, Plus } from "@/components/icons"
+import { History } from "@/components/History"
+import { ArrowUp, Check, ChevronDown, Gauge, LogOut, PanelLeft, Plus } from "@/components/icons"
 import { EFFORTS, effortLabel, label, quotaMessage, readStream, store } from "@/lib/api"
+import { chats, newChatId, Unauthorized, type ChatSummary, type SavedMessage } from "@/lib/chats"
 import { renderMarkdown } from "@/lib/markdown"
 import { cn } from "@/lib/utils"
 
@@ -20,6 +22,14 @@ type Msg = {
 
 let nextId = 1
 
+const isWide = () => window.matchMedia("(min-width: 1024px)").matches
+
+// What gets stored for a message: no ids, nothing still streaming.
+const toSaved = (list: Msg[]): SavedMessage[] =>
+  list.filter((m) => !m.pending).map(({ role, content, meta, error, notice }) => ({
+    role, content, ...(meta && { meta }), ...(error && { error }), ...(notice && { notice }),
+  }))
+
 export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (message?: string) => void }) {
   const [messages, setMessages] = useState<Msg[]>([])
   const [provider, setProvider] = useState(() => {
@@ -32,6 +42,81 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
   const logRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const jumpToEnd = useRef(false)
+
+  // Saved chats. chatId is null until the first message of a new chat is sent.
+  const [chatId, setChatId] = useState<string | null>(null)
+  const [saved, setSaved] = useState<ChatSummary[]>([])
+  const [savedLoading, setSavedLoading] = useState(true)
+  const [savedError, setSavedError] = useState("")
+  const [navOpen, setNavOpen] = useState(isWide)
+  const saveNext = useRef<string | null>(null)
+
+  const storageFailed = useCallback((err: unknown, what: string) => {
+    if (err instanceof Unauthorized) return onLogout(err.message)
+    setSavedError(what + ": " + (err instanceof Error ? err.message : String(err)))
+  }, [onLogout])
+
+  useEffect(() => {
+    chats.list()
+      .then((list) => { setSaved(list); setSavedError("") })
+      .catch((err) => storageFailed(err, "Couldn't load your chats"))
+      .finally(() => setSavedLoading(false))
+  }, [storageFailed])
+
+  // Save once a reply has finished (or failed), with the chat's provider and effort.
+  useEffect(() => {
+    const id = saveNext.current
+    if (busy || !id) return
+    saveNext.current = null
+    chats.save({ id, provider, effort, messages: toSaved(messages) })
+      .then((c) => { setSaved((l) => [c, ...l.filter((x) => x.id !== c.id)]); setSavedError("") })
+      .catch((err) => storageFailed(err, "Couldn't save this chat"))
+  }, [busy, messages, provider, effort, storageFailed])
+
+  const closeNavOnPhone = () => { if (!isWide()) setNavOpen(false) }
+
+  async function openChat(id: string) {
+    if (busy) return
+    closeNavOnPhone()
+    if (id === chatId) return
+    try {
+      const c = await chats.get(id)
+      setMessages(c.messages.map((m) => ({ ...m, id: nextId++ })))
+      setChatId(c.id)
+      // Pick up where the chat left off, if that provider is still configured.
+      if (c.provider && providers.includes(c.provider)) {
+        setProvider(c.provider)
+        const ok = EFFORTS[c.provider]?.options.some((o) => o.value === c.effort)
+        setEffort(ok && c.effort ? c.effort : store.effort(c.provider))
+      }
+      setSavedError("")
+      inputRef.current?.focus()
+    } catch (err) {
+      storageFailed(err, "Couldn't open that chat")
+    }
+  }
+
+  async function renameChat(id: string, title: string) {
+    try {
+      const c = await chats.rename(id, title)
+      setSaved((l) => l.map((x) => (x.id === id ? c : x)))
+      setSavedError("")
+    } catch (err) {
+      storageFailed(err, "Couldn't rename that chat")
+      throw err
+    }
+  }
+
+  async function deleteChat(id: string) {
+    try {
+      await chats.remove(id)
+      setSaved((l) => l.filter((x) => x.id !== id))
+      setSavedError("")
+      if (id === chatId) newChat()
+    } catch (err) {
+      storageFailed(err, "Couldn't delete that chat")
+    }
+  }
 
   // The log never scrolls on its own while a reply streams; it only jumps to the
   // end right after you send a message.
@@ -80,6 +165,8 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
       .filter((m) => !("error" in m && m.error))
       .map(({ role, content }) => ({ role, content }))
     const id = nextId++
+    const cid = chatId ?? newChatId()
+    if (!chatId) setChatId(cid)
     jumpToEnd.current = true
     setInput("")
     setMessages((l) => [
@@ -130,6 +217,7 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
       if (got) update(id, { content: text_, meta: (meta || "") + " · connection lost", pending: false })
       else update(id, { content: "Could not reach the server.", error: true, pending: false })
     } finally {
+      saveNext.current = cid
       update(id, { pending: false })
       inputRef.current?.focus()
     }
@@ -138,6 +226,8 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
   function newChat() {
     if (busy) return
     setMessages([])
+    setChatId(null)
+    closeNavOnPhone()
     inputRef.current?.focus()
   }
 
@@ -156,10 +246,34 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full">
+    <History
+      open={navOpen}
+      chats={saved}
+      loading={savedLoading}
+      error={savedError}
+      current={chatId}
+      busy={busy}
+      onClose={() => setNavOpen(false)}
+      onNew={newChat}
+      onOpen={openChat}
+      onRename={renameChat}
+      onDelete={deleteChat}
+    />
+    <div className="flex min-w-0 flex-1 flex-col">
       <header className="relative z-20 border-b border-line bg-paper/85 backdrop-blur-md">
         <div className="relative mx-auto flex max-w-[760px] items-center justify-between gap-2 px-3 py-2.5 sm:px-4">
           <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <button
+              type="button"
+              onClick={() => setNavOpen((o) => !o)}
+              title={navOpen ? "Hide chats" : "Show chats"}
+              aria-label={navOpen ? "Hide chats" : "Show chats"}
+              aria-expanded={navOpen}
+              className="-ml-1 grid size-8 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-ink/5 hover:text-ink"
+            >
+              <PanelLeft />
+            </button>
             <span className="shrink-0 font-display text-[20px] leading-none sm:text-[22px]">
               LLM<span className="text-ember">ate</span>
             </span>
@@ -219,6 +333,7 @@ export function Chat({ providers, onLogout }: { providers: string[]; onLogout: (
           Enter to send · Shift+Enter for a new line
         </p>
       </form>
+    </div>
     </div>
   )
 }

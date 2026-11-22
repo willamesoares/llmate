@@ -230,3 +230,122 @@ test("400 on bad message payloads", async () => {
     assert.equal((await handle(chat("gemini", messages), env)).status, 400);
   }
 });
+
+// ---- Saved chats ----
+
+// An in-memory stand-in for a Netlify Blobs store.
+function memStore() {
+  const data = new Map();
+  return {
+    data,
+    async get(key, { type } = {}) {
+      if (!data.has(key)) return null;
+      return type === "json" ? JSON.parse(data.get(key)) : data.get(key);
+    },
+    async setJSON(key, value) { data.set(key, JSON.stringify(value)); },
+    async delete(key) { data.delete(key); },
+    async list({ prefix = "" } = {}) {
+      return { blobs: [...data.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key, etag: "x" })) };
+    },
+  };
+}
+
+function chatsApi(token = TOKEN) {
+  const store = memStore();
+  let tick = 0;
+  const deps = { store: () => store, now: () => new Date(Date.UTC(2026, 10, 22, 0, 0, tick++)).toISOString() };
+  const call = async (action, body, t = token) => {
+    const res = await handle(req("/api/chats/" + action, { token: t, body }), env, deps);
+    return { status: res.status, body: await res.json() };
+  };
+  return { store, call, deps };
+}
+
+const turns = [
+  { role: "user", content: "How do   I bake\nsourdough bread at home without a fancy oven or a stand mixer?" },
+  { role: "assistant", content: "Use a Dutch oven.", meta: "Groq · gpt-oss-120b" },
+];
+
+test("chats: save, list, get, rename, delete", async () => {
+  const { call } = chatsApi();
+  assert.deepEqual((await call("list", {})).body, { chats: [] });
+
+  const saved = await call("save", { id: "chat_0001", provider: "groq", effort: "high", messages: turns });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.chat.title, "How do I bake sourdough bread at home without a fancy ove…");
+  assert.equal(saved.body.chat.provider, "groq");
+  assert.equal(saved.body.chat.effort, "high");
+
+  await call("save", { id: "chat_0002", provider: "gemini", messages: [{ role: "user", content: "second" }] });
+  const list = (await call("list", {})).body.chats;
+  assert.deepEqual(list.map((c) => c.id), ["chat_0002", "chat_0001"], "most recent first");
+
+  const got = (await call("get", { id: "chat_0001" })).body.chat;
+  assert.deepEqual(got.messages, turns);
+
+  assert.equal((await call("rename", { id: "chat_0001", title: "  Bread  " })).body.chat.title, "Bread");
+  // Saving again keeps the rename and moves the chat to the top.
+  await call("save", { id: "chat_0001", provider: "groq", messages: [...turns, { role: "user", content: "more" }] });
+  const after = (await call("list", {})).body.chats;
+  assert.equal(after[0].id, "chat_0001");
+  assert.equal(after[0].title, "Bread");
+  assert.equal(after[0].createdAt, saved.body.chat.createdAt);
+
+  assert.equal((await call("delete", { id: "chat_0001" })).status, 200);
+  assert.equal((await call("get", { id: "chat_0001" })).status, 404);
+  assert.deepEqual((await call("list", {})).body.chats.map((c) => c.id), ["chat_0002"]);
+});
+
+test("chats: each token sees only its own chats", async () => {
+  const { call } = chatsApi();
+  await call("save", { id: "chat_0001", messages: turns });
+  const other = "another-token-0123456789";
+  const res = await handle(req("/api/chats/list", { token: other, body: {} }), { ...env, ACCESS_TOKEN: other }, chatsApi().deps);
+  assert.deepEqual((await res.json()).chats, []);
+});
+
+test("chats: token is checked before storage is touched", async () => {
+  const deps = { store: () => { throw new Error("should not be called"); } };
+  for (const action of ["list", "get", "save", "rename", "delete"]) {
+    const res = await handle(req("/api/chats/" + action, { token: "nope", body: { id: "chat_0001" } }), env, deps);
+    assert.equal(res.status, 401);
+  }
+});
+
+test("chats: bad input is refused", async () => {
+  const { call } = chatsApi();
+  assert.equal((await call("get", { id: "../x" })).status, 400);
+  assert.equal((await call("save", { id: "chat_0001", messages: [{ role: "system", content: "x" }] })).status, 400);
+  assert.equal((await call("save", { id: "chat_0001", messages: "nope" })).status, 400);
+  assert.equal((await call("rename", { id: "chat_0001", title: "x" })).status, 404);
+  await call("save", { id: "chat_0001", messages: turns });
+  assert.equal((await call("rename", { id: "chat_0001", title: "   " })).status, 400);
+  assert.equal((await call("nope", {})).status, 404);
+});
+
+test("chats: unknown provider or effort is dropped, not stored", async () => {
+  const { call } = chatsApi();
+  const c = (await call("save", { id: "chat_0001", provider: "evil", effort: "max", messages: turns })).body.chat;
+  assert.equal(c.provider, null);
+  assert.equal(c.effort, null);
+  const d = (await call("save", { id: "chat_0002", provider: "gemini", effort: "max", messages: turns })).body.chat;
+  assert.equal(d.provider, "gemini");
+  assert.equal(d.effort, null);
+});
+
+test("chats: list repairs an index that missed a save or a delete", async () => {
+  const { call, store } = chatsApi();
+  await call("save", { id: "chat_0001", messages: turns });
+  await call("save", { id: "chat_0002", messages: turns });
+  const owner = [...store.data.keys()][0].split("/")[0];
+  // Another device's index write was lost, and a chat blob vanished.
+  store.data.set(owner + "/_index", JSON.stringify([{ id: "chat_0002", title: "t", updatedAt: "z" }, { id: "gone_0000", title: "g" }]));
+  const ids = (await call("list", {})).body.chats.map((c) => c.id).sort();
+  assert.deepEqual(ids, ["chat_0001", "chat_0002"]);
+});
+
+test("chats: storage failure is a 503, not a crash", async () => {
+  const deps = { store: () => ({ get: async () => { throw new Error("blobs down"); } }) };
+  const res = await handle(req("/api/chats/get", { body: { id: "chat_0001" } }), env, deps);
+  assert.equal(res.status, 503);
+});

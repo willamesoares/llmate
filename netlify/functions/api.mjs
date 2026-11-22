@@ -1,6 +1,7 @@
-// Single Netlify Function behind /api/verify and /api/chat.
+// Single Netlify Function behind /api/verify, /api/chat and /api/chats/*.
 // Every request must carry "Authorization: Bearer <ACCESS_TOKEN>".
 import { createHash, timingSafeEqual } from "node:crypto";
+import { getStore } from "@netlify/blobs";
 
 const MAX_MESSAGES = 40; // history turns sent upstream
 const MAX_CHARS = 32_000; // total characters across the history
@@ -192,20 +193,179 @@ export function availableProviders(env) {
   return Object.keys(PROVIDERS).filter((name) => env[PROVIDERS[name].key]);
 }
 
-export async function handle(req, env) {
+// ---- Saved chats (Netlify Blobs) ----
+//
+// Chats live in the "chats" blob store under "<owner>/<chatId>", where owner is
+// a hash of the access token. Rotating the token therefore starts a fresh,
+// empty history (the old chats stay in the store, just unreachable).
+// "<owner>/_index" holds the summaries the sidebar lists, so listing is one read.
+
+const CHAT_ID = /^[A-Za-z0-9_-]{8,64}$/;
+const MAX_SAVED_MESSAGES = 1000;
+const MAX_SAVED_CHARS = 2_000_000;
+const MAX_TITLE = 120;
+const INDEX = "_index";
+
+export function ownerKey(token) {
+  return createHash("sha256").update("llmate-chats:" + token).digest("hex").slice(0, 40);
+}
+
+export function titleFrom(messages) {
+  const first = messages.find((m) => m.role === "user")?.content || "";
+  const t = first.replace(/\s+/g, " ").trim();
+  if (!t) return "New chat";
+  return t.length > 60 ? t.slice(0, 57).trimEnd() + "…" : t;
+}
+
+function cleanTitle(raw) {
+  if (typeof raw !== "string") return null;
+  const t = raw.replace(/\s+/g, " ").trim().slice(0, MAX_TITLE);
+  return t || null;
+}
+
+// Keep only the fields the UI shows again when a chat is reopened.
+function cleanSaved(raw) {
+  if (!Array.isArray(raw) || raw.length > MAX_SAVED_MESSAGES) return null;
+  const out = [];
+  let chars = 0;
+  for (const m of raw) {
+    if (!m || (m.role !== "user" && m.role !== "assistant") || typeof m.content !== "string") return null;
+    chars += m.content.length;
+    const msg = { role: m.role, content: m.content };
+    if (typeof m.meta === "string" && m.meta) msg.meta = m.meta.slice(0, 300);
+    if (m.error === true) msg.error = true;
+    if (m.notice === true) msg.notice = true;
+    out.push(msg);
+  }
+  return chars > MAX_SAVED_CHARS ? null : out;
+}
+
+const summary = (c) => ({
+  id: c.id,
+  title: c.title,
+  provider: c.provider,
+  effort: c.effort,
+  createdAt: c.createdAt,
+  updatedAt: c.updatedAt,
+});
+const byRecent = (a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "");
+
+async function readIndex(store, owner) {
+  const idx = await store.get(`${owner}/${INDEX}`, { type: "json" });
+  return Array.isArray(idx) ? idx : [];
+}
+const writeIndex = (store, owner, list) => store.setJSON(`${owner}/${INDEX}`, list.sort(byRecent));
+
+async function handleChats(action, payload, store, owner, now) {
+  const id = payload?.id;
+  if (action !== "list" && (typeof id !== "string" || !CHAT_ID.test(id))) {
+    return json(400, { error: "id must be 8-64 letters, digits, _ or -" });
+  }
+  const key = `${owner}/${id}`;
+
+  if (action === "list") {
+    let index = await readIndex(store, owner);
+    // Repair the index if two devices raced: drop entries whose chat is gone,
+    // and pick up chats the index missed.
+    const { blobs } = await store.list({ prefix: owner + "/" });
+    const keys = new Set(blobs.map((b) => b.key.slice(owner.length + 1)).filter((k) => k !== INDEX));
+    const listed = new Set(index.map((c) => c.id));
+    let changed = false;
+    if (index.some((c) => !keys.has(c.id))) {
+      index = index.filter((c) => keys.has(c.id));
+      changed = true;
+    }
+    for (const k of keys) {
+      if (listed.has(k)) continue;
+      const chat = await store.get(`${owner}/${k}`, { type: "json" });
+      if (chat?.id) index.push(summary(chat));
+      changed = true;
+    }
+    if (changed) await writeIndex(store, owner, index);
+    return json(200, { chats: index.sort(byRecent) });
+  }
+
+  if (action === "get") {
+    const chat = await store.get(key, { type: "json" });
+    return chat ? json(200, { chat }) : json(404, { error: "Chat not found" });
+  }
+
+  if (action === "save") {
+    const messages = cleanSaved(payload?.messages);
+    if (!messages) {
+      return json(400, { error: `messages must be at most ${MAX_SAVED_MESSAGES} user/assistant turns and ${MAX_SAVED_CHARS} characters` });
+    }
+    const provider = Object.hasOwn(PROVIDERS, payload?.provider) ? payload.provider : null;
+    const effort = provider && EFFORTS[provider].includes(payload?.effort) ? payload.effort : null;
+    const existing = await store.get(key, { type: "json" });
+    const chat = {
+      id,
+      // Saving never renames: the title comes from the first message, or a rename.
+      title: existing?.title || cleanTitle(payload?.title) || titleFrom(messages),
+      provider,
+      effort,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+      messages,
+    };
+    await store.setJSON(key, chat);
+    const index = (await readIndex(store, owner)).filter((c) => c.id !== id);
+    index.push(summary(chat));
+    await writeIndex(store, owner, index);
+    return json(200, { chat: summary(chat) });
+  }
+
+  if (action === "rename") {
+    const title = cleanTitle(payload?.title);
+    if (!title) return json(400, { error: "title must not be empty" });
+    const chat = await store.get(key, { type: "json" });
+    if (!chat) return json(404, { error: "Chat not found" });
+    chat.title = title;
+    await store.setJSON(key, chat);
+    const index = (await readIndex(store, owner)).filter((c) => c.id !== id);
+    index.push(summary(chat));
+    await writeIndex(store, owner, index);
+    return json(200, { chat: summary(chat) });
+  }
+
+  if (action === "delete") {
+    await store.delete(key);
+    const index = await readIndex(store, owner);
+    if (index.some((c) => c.id === id)) await writeIndex(store, owner, index.filter((c) => c.id !== id));
+    return json(200, { ok: true });
+  }
+
+  return json(404, { error: "Not found" });
+}
+
+// Strong consistency so a chat saved on one device lists right away on another.
+const defaultStore = () => getStore({ name: "chats", consistency: "strong" });
+
+export async function handle(req, env, { store = defaultStore, now = () => new Date().toISOString() } = {}) {
   if (req.method !== "POST") return json(405, { error: "Method not allowed" });
   if (!env.ACCESS_TOKEN) return json(500, { error: "Server is missing ACCESS_TOKEN" });
-  if (!tokenMatches(bearer(req), env.ACCESS_TOKEN)) return json(401, { error: "Invalid token" });
+  const token = bearer(req);
+  if (!tokenMatches(token, env.ACCESS_TOKEN)) return json(401, { error: "Invalid token" });
 
   const path = new URL(req.url).pathname;
   if (path.endsWith("/verify")) return json(200, { ok: true, providers: availableProviders(env) });
-  if (!path.endsWith("/chat")) return json(404, { error: "Not found" });
+  const chats = path.match(/\/api\/chats\/(list|get|save|rename|delete)$/);
+  if (!chats && !path.endsWith("/chat")) return json(404, { error: "Not found" });
 
   let payload;
   try {
     payload = await req.json();
   } catch {
     return json(400, { error: "Body must be JSON" });
+  }
+
+  if (chats) {
+    try {
+      return await handleChats(chats[1], payload, store(), ownerKey(token), now());
+    } catch (err) {
+      console.error("Chat storage failed:", err.message);
+      return json(503, { error: "Chat storage is unavailable: " + err.message });
+    }
   }
   const messages = cleanMessages(payload?.messages);
   if (!messages) return json(400, { error: "messages must end with a user message" });
@@ -273,4 +433,6 @@ export async function handle(req, env) {
 
 export default (req) => handle(req, process.env);
 
-export const config = { path: ["/api/verify", "/api/chat"] };
+export const config = {
+  path: ["/api/verify", "/api/chat", "/api/chats/list", "/api/chats/get", "/api/chats/save", "/api/chats/rename", "/api/chats/delete"],
+};
