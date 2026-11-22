@@ -1,6 +1,20 @@
-export type Provider = "gemini" | "groq" | string
+export type Provider = string
 
-export const LABELS: Record<string, string> = { gemini: "Gemini", groq: "Groq" }
+export const LABELS: Record<string, string> = {
+  gemini: "Gemini",
+  groq: "Groq",
+  openrouter: "OpenRouter",
+  mistral: "Mistral",
+  cloudflare: "Cloudflare",
+  cohere: "Cohere",
+  nvidia: "NVIDIA",
+}
+
+// When each provider's daily free quota resets, where it is documented.
+const DAILY_RESET: Record<string, string> = {
+  gemini: "at midnight Pacific time",
+  cloudflare: "at midnight UTC",
+}
 export const label = (p?: string) => (p && LABELS[p]) || p || "The model"
 
 const TOKEN_KEY = "llmate.token"
@@ -106,8 +120,11 @@ export function quotaMessage(
   const others = providers.filter((p) => p !== data.provider)
   const alt = others.length ? " Meanwhile, you can switch to " + label(others[0]) + "." : ""
   const q = data.quota || {}
+  if (q.kind === "monthly") {
+    return "📅 " + name + " has used up this month's free quota. It resets next month." + alt
+  }
   if (q.kind === "daily") {
-    const when = waitText(q.retryAfterSeconds) || (data.provider === "gemini" ? "at midnight Pacific time" : "soon")
+    const when = waitText(q.retryAfterSeconds) || (data.provider && DAILY_RESET[data.provider]) || "soon"
     return "☕ " + name + " has used up today's free quota. Thanks for all the chatting! It resets " + when + "." + alt
   }
   const when = waitText(q.retryAfterSeconds) || "in a minute"

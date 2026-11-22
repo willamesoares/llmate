@@ -362,6 +362,29 @@ function ProviderSwitch({ providers, value, onChange, disabled }: {
       <span className="rounded-full border border-line px-3 py-1 font-mono text-[12px] text-muted">{label(providers[0])}</span>
     ) : null
   }
+  // More than three won't fit a segmented control on a phone: use a menu.
+  if (providers.length > 3) {
+    return (
+      <label className={cn("relative inline-flex shrink-0 items-center", disabled && "opacity-60")}>
+        <span className="sr-only">Provider</span>
+        <select
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+          title="Provider for the next message. You can switch at any time."
+          className={cn(
+            "appearance-none rounded-full border border-line bg-surface [color-scheme:light_dark] py-1 pr-7 pl-3 text-[13px] font-medium text-ink transition-colors hover:border-line-strong focus-visible:border-line-strong",
+            disabled ? "cursor-default" : "cursor-pointer",
+          )}
+        >
+          {providers.map((p) => (
+            <option key={p} value={p}>{label(p)}</option>
+          ))}
+        </select>
+        <ChevronDown width={14} height={14} className="pointer-events-none absolute right-2.5 text-muted" />
+      </label>
+    )
+  }
   return (
     <div
       role="radiogroup"
@@ -476,7 +499,7 @@ function EffortPicker({ provider, value, onChange, disabled }: {
           className="absolute top-full mt-1.5 w-[min(320px,calc(100%-24px))] rounded-2xl border border-line bg-surface p-1.5 shadow-[0_16px_40px_-18px_rgb(28_26_23/0.45)]"
         >
           <p className="px-2.5 pt-1.5 pb-1 font-mono text-[11px] tracking-wide text-muted">
-            {provider === "gemini" ? "How long Gemini thinks before answering" : "How much Groq reasons before answering"}
+            {provider === "gemini" ? "How long Gemini thinks before answering" : "How much " + label(provider) + " reasons before answering"}
           </p>
           {spec.options.map((o) => {
             const on = o.value === current.value

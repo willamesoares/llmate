@@ -349,3 +349,75 @@ test("chats: storage failure is a 503, not a crash", async () => {
   const res = await handle(req("/api/chats/get", { body: { id: "chat_0001" } }), env, deps);
   assert.equal(res.status, 503);
 });
+
+// ---- Extra OpenAI-compatible providers ----
+
+const extraEnv = {
+  ACCESS_TOKEN: TOKEN,
+  OPENROUTER_API_KEY: "or",
+  MISTRAL_API_KEY: "mi",
+  CLOUDFLARE_ACCOUNT_ID: "acc123",
+  CLOUDFLARE_API_TOKEN: "cf",
+  COHERE_API_KEY: "co",
+  NVIDIA_API_KEY: "nv",
+};
+
+test("verify lists every configured provider in order; Cloudflare needs both vars", async () => {
+  const all = await (await handle(req("/api/verify"), { ...env, ...extraEnv })).json();
+  assert.deepEqual(all.providers, ["gemini", "groq", "openrouter", "mistral", "cloudflare", "cohere", "nvidia"]);
+  const noAccount = await (await handle(req("/api/verify"), { ...extraEnv, CLOUDFLARE_ACCOUNT_ID: "" })).json();
+  assert.deepEqual(noAccount.providers, ["openrouter", "mistral", "cohere", "nvidia"]);
+  const res = await handle(chat("cloudflare"), { ...extraEnv, CLOUDFLARE_API_TOKEN: "" });
+  assert.equal(res.status, 400);
+});
+
+for (const [name, url, key, model] of [
+  ["openrouter", "https://openrouter.ai/api/v1/chat/completions", "or", "openrouter/free"],
+  ["mistral", "https://api.mistral.ai/v1/chat/completions", "mi", "mistral-small-latest"],
+  ["cloudflare", "https://api.cloudflare.com/client/v4/accounts/acc123/ai/v1/chat/completions", "cf", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"],
+  ["cohere", "https://api.cohere.ai/compatibility/v1/chat/completions", "co", "command-a-plus-05-2026"],
+  ["nvidia", "https://integrate.api.nvidia.com/v1/chat/completions", "nv", "meta/llama-3.3-70b-instruct"],
+]) {
+  test(`${name}: streams from its endpoint with its key and default model`, async () => {
+    mockFetch(() => sse([grq("hello "), grq(name)], { tail: "data: [DONE]\n\n" }));
+    const evs = await events(await handle(chat(name), { ...extraEnv, SYSTEM_PROMPT: "be nice" }));
+    assert.deepEqual(evs[0], { type: "meta", provider: name, model });
+    assert.equal(textOf(evs), "hello " + name);
+    assert.deepEqual(evs.at(-1), { type: "done" });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, url);
+    assert.equal(calls[0].opts.headers.authorization, "Bearer " + key);
+    const sent = JSON.parse(calls[0].opts.body);
+    assert.equal(sent.model, model);
+    assert.equal(sent.stream, true);
+    assert.deepEqual(sent.messages[0], { role: "system", content: "be nice" });
+  });
+}
+
+test("a model override env var is used", async () => {
+  mockFetch(() => sse([grq("ok")]));
+  const evs = await events(await handle(chat("openrouter"), { ...extraEnv, OPENROUTER_MODEL: "some/model:free" }));
+  assert.equal(evs[0].model, "some/model:free");
+  assert.equal(JSON.parse(calls[0].opts.body).model, "some/model:free");
+});
+
+test("providers without effort levels refuse an effort", async () => {
+  mockFetch(() => { throw new Error("should not be called"); });
+  const res = await handle(chat("mistral", undefined, { effort: "high" }), extraEnv);
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /does not take an effort/);
+  assert.equal(calls.length, 0);
+});
+
+test("OpenRouter, Cloudflare and Cohere quota errors are classified", async () => {
+  mockFetch(() => new Response(JSON.stringify({ error: { message: "Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day", code: 429 } }), { status: 429 }));
+  assert.equal((await (await handle(chat("openrouter"), extraEnv)).json()).quota.kind, "daily");
+  mockFetch(() => new Response(JSON.stringify({ errors: [{ code: 4006, message: "you have used up your daily free allocation of 10,000 neurons" }], success: false }), { status: 429 }));
+  const cf = await (await handle(chat("cloudflare"), extraEnv)).json();
+  assert.equal(cf.quota.kind, "daily");
+  assert.match(cf.error, /^Cloudflare HTTP 429: you have used up your daily free allocation/);
+  mockFetch(() => new Response(JSON.stringify({ message: "You are using a Trial key, which is limited to 1000 API calls / month." }), { status: 429 }));
+  const co = await (await handle(chat("cohere"), extraEnv)).json();
+  assert.equal(co.quota.kind, "monthly");
+  assert.match(co.error, /^Cohere HTTP 429: You are using a Trial key/);
+});

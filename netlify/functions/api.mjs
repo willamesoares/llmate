@@ -79,7 +79,9 @@ async function upstreamError(name, res) {
   try {
     body = await res.text();
     try {
-      detail = JSON.parse(body)?.error?.message || body;
+      const j = JSON.parse(body);
+      // OpenAI style {error:{message}}, Mistral/Cohere {message}, Cloudflare {errors:[{message}]}.
+      detail = (typeof j?.error === "string" ? j.error : j?.error?.message) || j?.message || j?.errors?.[0]?.message || j?.detail || body;
     } catch {
       detail = body;
     }
@@ -92,10 +94,13 @@ async function upstreamError(name, res) {
 
 // Work out from a 429 whether a daily quota or a short rate limit was hit,
 // and roughly when to retry. Gemini names the quota (e.g. "...PerDay...");
-// Groq says "requests per day (RPD)" or "tokens per day (TPD)".
+// Groq says "requests per day (RPD)" or "tokens per day (TPD)"; OpenRouter
+// "free-models-per-day"; Cloudflare "daily free allocation". Cohere trial keys
+// have a monthly cap.
 export function classifyQuota(body, retryAfter) {
   const text = String(body || "");
-  const daily = /per ?day|\bRPD\b|\bTPD\b|daily/i.test(text);
+  const monthly = /per[ -]?month|monthly|\/ ?month|a month/i.test(text);
+  const daily = /per[ -]?day|\bRPD\b|\bTPD\b|daily/i.test(text);
   let seconds = null;
   const m = text.match(/(?:retry|try again) in ((?:[\d.]+[hms])+)/i);
   if (m) {
@@ -106,7 +111,7 @@ export function classifyQuota(body, retryAfter) {
   } else if (retryAfter && /^\d+$/.test(retryAfter)) {
     seconds = Number(retryAfter);
   }
-  return { kind: daily ? "daily" : "rate", retryAfterSeconds: seconds === null ? null : Math.ceil(seconds) };
+  return { kind: monthly ? "monthly" : daily ? "daily" : "rate", retryAfterSeconds: seconds === null ? null : Math.ceil(seconds) };
 }
 
 // Each provider opens a streaming request. A failed request throws (so quota
@@ -149,31 +154,58 @@ async function openGemini(messages, system, env, timer, effort) {
   return { model, pieces: pieces() };
 }
 
-async function openGroq(messages, system, env, timer, effort) {
-  const model = env.GROQ_MODEL || "openai/gpt-oss-120b";
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${env.GROQ_API_KEY}` },
-    body: JSON.stringify({
-      model,
-      stream: true,
-      // gpt-oss streams its reasoning in delta.reasoning (ignored below); it keeps
-      // the idle timer alive while the model thinks.
-      ...(effort && { reasoning_effort: effort }),
-      messages: system ? [{ role: "system", content: system }, ...messages] : messages,
-    }),
-    signal: timer.signal,
-  });
-  if (!res.ok) throw await upstreamError("Groq", res);
-  async function* pieces() {
-    for await (const ev of sseEvents(res.body, timer.poke)) {
-      if (ev.error) throw new Error("Groq: " + (ev.error.message || "stream error"));
-      const text = ev.choices?.[0]?.delta?.content;
-      if (text) yield text;
+// Groq, OpenRouter, Mistral, Cloudflare Workers AI, Cohere and NVIDIA all
+// speak the OpenAI chat-completions streaming format, so one opener serves them.
+function openAICompatible(label, url, keyVar, modelVar, defaultModel, { effortParam } = {}) {
+  return async function open(messages, system, env, timer, effort) {
+    const model = env[modelVar] || defaultModel;
+    const res = await fetch(typeof url === "function" ? url(env) : url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${env[keyVar]}` },
+      body: JSON.stringify({
+        model,
+        stream: true,
+        // Reasoning models stream their thinking in a separate field (ignored
+        // below); it keeps the idle timer alive while the model thinks.
+        ...(effort && effortParam && { [effortParam]: effort }),
+        messages: system ? [{ role: "system", content: system }, ...messages] : messages,
+      }),
+      signal: timer.signal,
+    });
+    if (!res.ok) throw await upstreamError(label, res);
+    async function* pieces() {
+      for await (const ev of sseEvents(res.body, timer.poke)) {
+        if (ev.error) throw new Error(`${label}: ` + (ev.error.message || "stream error"));
+        const text = ev.choices?.[0]?.delta?.content;
+        if (typeof text === "string" && text) yield text;
+      }
     }
-  }
-  return { model, pieces: pieces() };
+    return { model, pieces: pieces() };
+  };
 }
+
+const openGroq = openAICompatible(
+  "Groq", "https://api.groq.com/openai/v1/chat/completions", "GROQ_API_KEY", "GROQ_MODEL", "openai/gpt-oss-120b",
+  { effortParam: "reasoning_effort" },
+);
+// "openrouter/free" picks one of OpenRouter's free models for each request.
+const openOpenRouter = openAICompatible(
+  "OpenRouter", "https://openrouter.ai/api/v1/chat/completions", "OPENROUTER_API_KEY", "OPENROUTER_MODEL", "openrouter/free",
+);
+const openMistral = openAICompatible(
+  "Mistral", "https://api.mistral.ai/v1/chat/completions", "MISTRAL_API_KEY", "MISTRAL_MODEL", "mistral-small-latest",
+);
+const openCloudflare = openAICompatible(
+  "Cloudflare",
+  (env) => `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID)}/ai/v1/chat/completions`,
+  "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+);
+const openCohere = openAICompatible(
+  "Cohere", "https://api.cohere.ai/compatibility/v1/chat/completions", "COHERE_API_KEY", "COHERE_MODEL", "command-a-plus-05-2026",
+);
+const openNvidia = openAICompatible(
+  "NVIDIA", "https://integrate.api.nvidia.com/v1/chat/completions", "NVIDIA_API_KEY", "NVIDIA_MODEL", "meta/llama-3.3-70b-instruct",
+);
 
 // Effort levels each provider accepts. Gemini 3.x takes a thinking level
 // ("minimal" is as close to off as Flash-Lite allows); Groq's gpt-oss takes a
@@ -183,14 +215,22 @@ export const EFFORTS = {
   groq: ["low", "medium", "high"],
 };
 
+// Display order. A provider is offered only when all of its env vars are set.
 const PROVIDERS = {
-  gemini: { key: "GEMINI_API_KEY", open: openGemini },
-  groq: { key: "GROQ_API_KEY", open: openGroq },
+  gemini: { keys: ["GEMINI_API_KEY"], open: openGemini },
+  groq: { keys: ["GROQ_API_KEY"], open: openGroq },
+  openrouter: { keys: ["OPENROUTER_API_KEY"], open: openOpenRouter },
+  mistral: { keys: ["MISTRAL_API_KEY"], open: openMistral },
+  cloudflare: { keys: ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"], open: openCloudflare },
+  cohere: { keys: ["COHERE_API_KEY"], open: openCohere },
+  nvidia: { keys: ["NVIDIA_API_KEY"], open: openNvidia },
 };
 
-// Providers whose API key is set, in display order.
+const configured = (env, name) => PROVIDERS[name].keys.every((k) => env[k]);
+
+// Providers whose API keys are set, in display order.
 export function availableProviders(env) {
-  return Object.keys(PROVIDERS).filter((name) => env[PROVIDERS[name].key]);
+  return Object.keys(PROVIDERS).filter((name) => configured(env, name));
 }
 
 // ---- Saved chats (Netlify Blobs) ----
@@ -296,7 +336,7 @@ async function handleChats(action, payload, store, owner, now) {
       return json(400, { error: `messages must be at most ${MAX_SAVED_MESSAGES} user/assistant turns and ${MAX_SAVED_CHARS} characters` });
     }
     const provider = Object.hasOwn(PROVIDERS, payload?.provider) ? payload.provider : null;
-    const effort = provider && EFFORTS[provider].includes(payload?.effort) ? payload.effort : null;
+    const effort = provider && EFFORTS[provider]?.includes(payload?.effort) ? payload.effort : null;
     const existing = await store.get(key, { type: "json" });
     const chat = {
       id,
@@ -375,9 +415,10 @@ export async function handle(req, env, { store = defaultStore, now = () => new D
   if (!Object.hasOwn(PROVIDERS, name)) {
     return json(400, { error: "provider must be one of: " + Object.keys(PROVIDERS).join(", ") });
   }
-  if (!env[PROVIDERS[name].key]) return json(400, { error: `${name} is not configured on the server` });
+  if (!configured(env, name)) return json(400, { error: `${name} is not configured on the server` });
   const effort = payload?.effort ?? null;
-  if (effort !== null && !EFFORTS[name].includes(effort)) {
+  if (effort !== null && !(EFFORTS[name] || []).includes(effort)) {
+    if (!EFFORTS[name]) return json(400, { error: `${name} does not take an effort level` });
     return json(400, { error: `effort for ${name} must be one of: ` + EFFORTS[name].join(", ") });
   }
 
